@@ -1,0 +1,54 @@
+services:
+  oracle:
+    # Oracle Database Free (26ai). Alternative official image:
+    # container-registry.oracle.com/database/free:latest (env: ORACLE_PWD)
+    image: gvenzl/oracle-free:latest
+    container_name: text2sql-oracle
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD:-SysPassword1}
+      APP_USER: ${ORACLE_USERNAME:-app_user}
+      APP_USER_PASSWORD: ${ORACLE_PASSWORD:-AppPassword1}
+    ports:
+      - "1521:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+  ollama:
+    image: ollama/ollama:latest
+    container_name: text2sql-ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 5
+        ollama pull "${OLLAMA_MODEL:-qwen2.5-coder:7b}"
+        wait
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:7b}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "ls"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    # Uncomment for NVIDIA GPU acceleration (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  oracle-data:
+  ollama-data:

@@ -1,0 +1,22 @@
+${AnsiColor.BRIGHT_GREEN}
+ _____         _   ____  ____   ___  _
+|_   _|____  _| |_|___ \/ ___| / _ \| |
+  | |/ _ \ \/ / __| __) \___ \| | | | |
+  | |  __/>  <| |_ / __/ ___) | |_| | |___
+  |_|\___/_/\_\\__|_____|____/ \__\_\_____|
+
+${AnsiColor.BRIGHT_CYAN}
+LLM Text2SQL — natural-language question to Oracle SQL, validated and executed
+
+:: Project Metadata ::
+- Project Name      : ${app.metadata.project-name}
+- Description       : ${app.metadata.description}
+- Group Id          : ${app.metadata.group-id}
+- Artifact Id       : ${app.metadata.artifact-id}
+- Project Version   : ${app.metadata.project-version}
+- Spring Boot       : ${spring-boot.version}
+- Spring AI         : ${app.metadata.spring-ai-version}
+- Java Version      : ${java.version}
+- Database          : ${app.metadata.database}
+- LLM Provider      : ${app.metadata.llm-provider}
+${AnsiColor.DEFAULT}

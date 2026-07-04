@@ -1,0 +1,79 @@
+server:
+  port: 8080
+  error:
+    include-message: always
+
+spring:
+  application:
+    name: llm-text2sql
+  datasource:
+    url: ${ORACLE_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}
+    username: ${ORACLE_USERNAME:app_user}
+    password: ${ORACLE_PASSWORD:AppPassword1}
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      pool-name: text2sql-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 5000
+      read-only: true
+  flyway:
+    url: ${ORACLE_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}
+    user: ${ORACLE_USERNAME:app_user}
+    password: ${ORACLE_PASSWORD:AppPassword1}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  ai:
+    model:
+      chat: ${LLM_PROVIDER:ollama}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        model: ${OLLAMA_MODEL:qwen2.5-coder:7b}
+        temperature: 0.0
+        num-ctx: 8192
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        model: claude-opus-4-8
+        max-tokens: 2048
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+    info:
+      enabled: true
+  info:
+    git:
+      mode: full
+    build:
+      enabled: true
+    env:
+      enabled: true
+    java:
+      enabled: true
+
+logging:
+  level:
+    com.org.llm: INFO
+
+app:
+  metadata:
+    project-name: LLM Text2SQL
+    description: Natural-language question to Oracle SQL — validated and executed.
+    group-id: com.org.llm
+    artifact-id: llm-text2sql
+    project-version: 0.0.1-SNAPSHOT
+    spring-ai-version: 2.0.0
+    database: Oracle Database 26ai
+    llm-provider: ${LLM_PROVIDER:ollama}
+  text2sql:
+    schema-owner: ${TEXT2SQL_SCHEMA_OWNER:${ORACLE_USERNAME:app_user}}
+    default-max-rows: 100
+    hard-max-rows: 1000
+    query-timeout-seconds: 30

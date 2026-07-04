@@ -1,0 +1,151 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-07-04T00:00:00.000Z",
+  "__export_source": "insomnia.desktop.app:v11.0.0",
+  "resources": [
+    {
+      "_id": "wrk_llm_text2sql",
+      "_type": "workspace",
+      "name": "LLM Text2SQL API",
+      "description": "Spring Boot + Spring AI (Anthropic) Text-to-SQL service backed by Oracle Database 26ai",
+      "scope": "collection"
+    },
+    {
+      "_id": "env_llm_text2sql_base",
+      "_type": "environment",
+      "parentId": "wrk_llm_text2sql",
+      "name": "Base Environment",
+      "data": {
+        "base_url": "http://localhost:8080"
+      }
+    },
+    {
+      "_id": "env_llm_text2sql_local",
+      "_type": "environment",
+      "parentId": "env_llm_text2sql_base",
+      "name": "Local",
+      "data": {
+        "base_url": "http://localhost:8080"
+      }
+    },
+    {
+      "_id": "fld_query",
+      "_type": "request_group",
+      "parentId": "wrk_llm_text2sql",
+      "name": "Query",
+      "metaSortKey": 100
+    },
+    {
+      "_id": "fld_schema",
+      "_type": "request_group",
+      "parentId": "wrk_llm_text2sql",
+      "name": "Schema",
+      "metaSortKey": 200
+    },
+    {
+      "_id": "fld_ops",
+      "_type": "request_group",
+      "parentId": "wrk_llm_text2sql",
+      "name": "Operations",
+      "metaSortKey": 300
+    },
+    {
+      "_id": "req_query_execute",
+      "_type": "request",
+      "parentId": "fld_query",
+      "name": "Ask question (generate + execute)",
+      "description": "Converts a natural-language question to Oracle SQL, validates it, executes it, and returns rows.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/query",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"question\": \"What are the top 5 customers by total order amount in the last 90 days?\",\n\t\"maxRows\": 100\n}"
+      },
+      "metaSortKey": 100
+    },
+    {
+      "_id": "req_sql_generate",
+      "_type": "request",
+      "parentId": "fld_query",
+      "name": "Generate SQL only (dry run)",
+      "description": "Returns the generated SQL and explanation without executing anything.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/sql/generate",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"question\": \"How many orders were placed each month this year?\"\n}"
+      },
+      "metaSortKey": 200
+    },
+    {
+      "_id": "req_query_validation_error",
+      "_type": "request",
+      "parentId": "fld_query",
+      "name": "Ask question (validation error sample)",
+      "description": "Blank question — demonstrates the 400 validation error shape.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/query",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"question\": \"\"\n}"
+      },
+      "metaSortKey": 300
+    },
+    {
+      "_id": "req_schema_get",
+      "_type": "request",
+      "parentId": "fld_schema",
+      "name": "Get schema snapshot",
+      "description": "The cached schema description currently grounding the LLM prompt.",
+      "method": "GET",
+      "url": "{{ _.base_url }}/api/v1/schema",
+      "headers": [],
+      "body": {},
+      "metaSortKey": 100
+    },
+    {
+      "_id": "req_schema_refresh",
+      "_type": "request",
+      "parentId": "fld_schema",
+      "name": "Refresh schema snapshot",
+      "description": "Re-introspects the Oracle data dictionary. Call after DDL changes.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/schema/refresh",
+      "headers": [],
+      "body": {},
+      "metaSortKey": 200
+    },
+    {
+      "_id": "req_health",
+      "_type": "request",
+      "parentId": "fld_ops",
+      "name": "Health",
+      "method": "GET",
+      "url": "{{ _.base_url }}/actuator/health",
+      "headers": [],
+      "body": {},
+      "metaSortKey": 100
+    },
+    {
+      "_id": "req_metrics",
+      "_type": "request",
+      "parentId": "fld_ops",
+      "name": "Metrics",
+      "method": "GET",
+      "url": "{{ _.base_url }}/actuator/metrics",
+      "headers": [],
+      "body": {},
+      "metaSortKey": 200
+    }
+  ]
+}
