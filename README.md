@@ -88,6 +88,57 @@ curl -s localhost:8080/api/v1/select-ai/query \
 
 `POST /api/v1/select-ai/query` (`SelectAiService`) skips this app's own Spring AI pipeline entirely. It sends the question straight to Oracle's built-in **Select AI** feature (`DBMS_CLOUD_AI`): the *database* calls its own configured LLM provider, generates the SQL, executes it, and hands back rows — this app only activates the AI profile and relays the `ResultSet`. No `ChatClient`, no `SchemaService` snapshot, no `SqlGuard`. This is the concrete, running implementation of the comparison discussed in the [Deep Dive](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each) below; the setup here follows the walkthrough in the [LinkedIn article](#reference) linked at the end of this file.
 
+### ⚠️ The free/local Oracle image does NOT have Select AI — you need a real Oracle Cloud account
+
+This is the single most common point of confusion when trying this endpoint locally, so it gets called out up front: **`container-registry.oracle.com/database/free` (both the regular and `-lite` tags) does not ship the `DBMS_CLOUD_AI` package at all.** Calling `/api/v1/select-ai/query` against the `docker-compose.yaml` Oracle container in this repo fails with:
+
+```
+ORA-06550: line 1, column 7:
+PLS-00201: identifier 'DBMS_CLOUD_AI.SET_PROFILE' must be declared
+```
+
+That is not a bug in this app, and not something any `docker-compose.yaml` setting, `shm_size`, or seccomp flag can fix — `DBMS_CLOUD_AI` (Select AI) is a capability Oracle only ships on **Autonomous Database**, not on the free on-prem/container "Free" edition. The `/api/v1/query` and `/api/v1/sql/generate` endpoints (this app's own Spring AI pipeline) work fine against the local free container — only the native `/api/v1/select-ai/*` endpoints need a real Autonomous Database.
+
+The good news: Oracle Cloud's **Always Free** tier includes an Autonomous Database instance with Select AI enabled, at no cost, no time limit, and no credit-card charge after signup. Steps, in detail:
+
+1. **Create an Oracle Cloud (OCI) account** at [oracle.com/cloud/free](https://www.oracle.com/cloud/free/) — sign up with an email, verify it, and provide a payment card for identity verification only (Oracle explicitly does not charge it for Always Free resources unless you later upgrade). This creates a "root compartment" tenancy you'll provision resources into.
+
+2. **Provision an Always Free Autonomous Database** from the OCI Console:
+   - Console → hamburger menu → *Oracle Database* → *Autonomous Database*.
+   - *Create Autonomous Database* → give it a display name and database name (e.g. `text2sqldemo`).
+   - Workload type: **Transaction Processing** (or **JSON** — either supports Select AI; avoid *Data Warehouse* only if you specifically want OLTP-shaped defaults).
+   - **Always Free** toggle: switch it on. This caps the instance at 1 OCPU / 20 GB storage — plenty for this repo's demo schema — and is what makes it free indefinitely.
+   - Set the **ADMIN password** — this is the privileged account used for the one-time ACL/grant steps below, distinct from the `text2sql` runtime user this app connects as.
+   - Choose **network access**: *Secure access from everywhere* is simplest to start; you can restrict to an IP allowlist later.
+   - Click **Create Autonomous Database** and wait (usually 1–2 minutes) for it to reach the **Available** state.
+
+3. **Get the connection details** — two options, either works with this app's `ORACLE_URL`:
+   - **Wallet-based (mTLS)**: Database details page → *Database Connection* → *Download Wallet* (set a wallet password) → unzip it somewhere on the machine running this app → set `ORACLE_URL` to a TNS alias plus the wallet path, e.g. `jdbc:oracle:thin:@text2sqldemo_high?TNS_ADMIN=/path/to/unzipped/wallet`.
+   - **TLS without a wallet (simpler, no file to manage)**: Database details page → *Database Connection* → *TLS authentication* tab → copy the **connection string** for the `_high` (or `_medium`) service — it's a `tcps://` Easy Connect string Oracle's `ojdbc17` driver (already a dependency here) understands natively as `ORACLE_URL` with no extra config.
+
+4. **Create the `text2sql` runtime user** on this new instance (same statements used earlier in this README for the local DB, run once via Database Actions → SQL, or any SQL client, connected as ADMIN):
+
+   ```sql
+   CREATE USER text2sql IDENTIFIED BY "<a-strong-password>";
+   GRANT CONNECT, RESOURCE TO text2sql;
+   GRANT CREATE SESSION, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO text2sql;
+   GRANT UNLIMITED TABLESPACE TO text2sql;
+   ```
+
+5. **Point this app at it** — update your environment (or `.env`, or however you inject config) with the new instance's details:
+
+   ```sh
+   export ORACLE_URL='jdbc:oracle:thin:@<your_tcps_connect_string_or_tns_alias>'
+   export ORACLE_USERNAME=text2sql
+   export ORACLE_PASSWORD='<the-password-from-step-4>'
+   ```
+
+6. **Run steps 1–2 below** (ACL + package grants) against this instance, connected as **ADMIN**, not `text2sql`.
+
+7. **Get an LLM provider API key** (OpenAI, Cohere, or Gemini — whichever `SELECT_AI_PROVIDER` you plan to use) and run `POST /api/v1/select-ai/setup` as described further down — this does steps 3–4 (credential + profile creation) for you.
+
+8. Only after all of the above does `POST /api/v1/select-ai/query` have anything to talk to. Until then, keep using `/api/v1/query` against the local free/lite container for everyday development.
+
 ### One-time database setup (run once, as a privileged user, before calling this endpoint)
 
 1. **Open network access** so the database can reach the LLM provider's API (skip if the provider is OCI GenAI, which stays inside Oracle Cloud):
