@@ -76,3 +76,305 @@ Import `insomnia-collection.json` (Application menu → Import). Set `base_url` 
 - DB connections used for generated SQL are read-only (Hikari `read-only: true`) **and** `SqlGuard` rejects anything but a single `SELECT`/`WITH` statement — defense in depth against prompt injection through question text. Flyway migrations use a separate writable connection at startup only.
 - In production, grant the runtime DB user `SELECT` only and run Flyway with a separate privileged user (`spring.flyway.user`).
 - Row cap (`hard-max-rows`) and query timeout bound resource usage.
+
+---
+
+# Deep Dive: Oracle Database 26ai — the AI-Native RDBMS
+
+> This section is a standalone technical primer on what "AI Database" means for Oracle 23ai/26ai, how its native text-to-SQL feature (**Select AI**) actually works under the hood, how it differs from the app-level pipeline in this repo, and what else the platform is good for beyond chat-to-query. It assumes relational database familiarity but no prior exposure to Oracle's AI feature set.
+
+## Table of contents
+
+1. [Why "AI Database" is a real category, not a marketing label](#1-why-ai-database-is-a-real-category-not-a-marketing-label)
+2. [The core primitive: AI Vector Search](#2-the-core-primitive-ai-vector-search)
+3. [Select AI: Oracle's native text-to-SQL](#3-select-ai-oracles-native-text-to-sql)
+4. [Select AI RAG: retrieval over unstructured content](#4-select-ai-rag-retrieval-over-unstructured-content)
+5. [This repo's approach vs. Select AI — and when to pick each](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each)
+6. [JSON Relational Duality: one row, two data models](#6-json-relational-duality-one-row-two-data-models)
+7. [In-database machine learning (OML)](#7-in-database-machine-learning-oml)
+8. [Multi-model in one engine: graph, spatial, XML, text](#8-multi-model-in-one-engine-graph-spatial-xml-text)
+9. [Autonomous operations: self-tuning, self-patching, self-securing](#9-autonomous-operations-self-tuning-self-patching-self-securing)
+10. [How this compares to PostgreSQL, MySQL, and dedicated vector databases](#10-how-this-compares-to-postgresql-mysql-and-dedicated-vector-databases)
+11. [Other use cases worth knowing about](#11-other-use-cases-worth-knowing-about)
+12. [Glossary](#12-glossary)
+
+---
+
+## 1. Why "AI Database" is a real category, not a marketing label
+
+For three decades, "add AI to your app" meant: run your OLTP database for transactional truth, stand up a separate vector database (Pinecone, Weaviate, pgvector-on-Postgres) for embeddings, wire in an ETL pipeline to keep the two in sync, and hope the sync lag never causes a stale answer. That's the shape of almost every RAG (retrieval-augmented generation) architecture built in 2023–2024: **two systems of record, one consistency problem.**
+
+Oracle's bet with the 23ai release (and continued in 26ai) is that the *vector index* is just another index type — like a B-tree or a bitmap index — and belongs **inside** the same engine that already holds your relational data, your JSON documents, your transactional history, and your access control model. The pitch: no second database, no sync job, no separate security model to audit, and — critically for this repo's use case — no separate place for an LLM's *generated SQL* to accidentally reach data it shouldn't.
+
+Concretely, "AI Database" bundles four previously-separate concerns into one product:
+
+| Concern | Old way (multi-system) | Oracle 23ai/26ai way |
+|---|---|---|
+| Store embeddings for semantic search | Pinecone / Weaviate / Milvus | `VECTOR` column type, native `VECTOR_DISTANCE()` |
+| Generate SQL from natural language | Custom app code calling an LLM (what this repo does) | `DBMS_CLOUD_AI` package (**Select AI**) |
+| Retrieve unstructured docs for RAG | LangChain + vector store + separate doc store | **Select AI RAG** — vectorize, chunk, retrieve, and generate in-database |
+| Serve both relational and document (JSON) shapes of the same data | Denormalize into Mongo *and* Postgres, sync both | **JSON Relational Duality Views** — one physical row, two logical shapes |
+
+None of this is exotic. It's the same relational engine you already know (same `SELECT`, same `JOIN`, same ACID transactions, same `SQL*Plus`/JDBC access this repo already uses), with new **data types**, new **PL/SQL packages**, and new **index types** layered on top. If you can write a `SELECT`, you can already query a vector index — you just call `VECTOR_DISTANCE(embedding_col, :query_vector, COSINE)` in the `ORDER BY` clause instead of a normal comparison.
+
+## 2. The core primitive: AI Vector Search
+
+Everything else in this document builds on one feature: a native `VECTOR` data type and the index structures that make similarity search over it fast at scale.
+
+```sql
+CREATE TABLE product_docs (
+    doc_id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    content     CLOB,
+    embedding   VECTOR(1536, FLOAT32)   -- dimension + element type, just like NUMBER(p,s)
+);
+
+-- Approximate nearest-neighbor index — the vector equivalent of a B-tree
+CREATE VECTOR INDEX product_docs_idx ON product_docs (embedding)
+    ORGANIZATION NEIGHBOR PARTITIONS
+    DISTANCE COSINE
+    WITH TARGET ACCURACY 95;
+
+-- Semantic search, in plain SQL
+SELECT doc_id, content
+FROM   product_docs
+ORDER  BY VECTOR_DISTANCE(embedding, :query_embedding, COSINE)
+FETCH FIRST 10 ROWS ONLY;
+```
+
+A few things worth calling out for anyone coming from `pgvector` or a dedicated vector store:
+
+- **`VECTOR(dimension, format)`** is a first-class column type — `FLOAT32`, `FLOAT64`, `INT8`, or `BINARY` element types, so you can trade precision for storage/speed (binary vectors, for instance, compress an embedding to 1 bit per dimension for coarse-but-cheap first-pass filtering).
+- **Index organizations**: `NEIGHBOR PARTITIONS` (Oracle's IVF-style partitioned index, good for very large vector sets that don't fit in memory) and `HNSW` (graph-based, in-memory, lower latency at moderate scale) — you pick per index, the same way you'd pick a bitmap vs. B-tree index for a relational column, based on your read/write/memory tradeoffs.
+- **`VECTOR_DISTANCE(v1, v2, metric)`** supports `COSINE`, `DOT`, `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `HAMMING` — you're not locked into cosine similarity the way many vector-store APIs assume.
+- **It's just a column.** Because it's a normal column on a normal table, a vector similarity search can sit in the same `WHERE`/`JOIN` as ordinary relational predicates — "find the 10 most semantically similar support tickets, but only ones opened by a customer on an Enterprise plan, joined against the `customers` table" is *one query*, not an app-level fan-out across two databases.
+
+This single primitive is what everything below is built on: Select AI's RAG mode uses it to retrieve context; JSON Duality Views can carry embeddings alongside document data; and hybrid search (vector + full-text + relational filters in one query) is possible precisely because there's no second system to federate across.
+
+## 3. Select AI: Oracle's native text-to-SQL
+
+This is the feature most directly comparable to what `TextToSqlService` in this repo does by hand — except Oracle ships it as a built-in PL/SQL package (`DBMS_CLOUD_AI`) rather than application code you write and own.
+
+### How it's configured
+
+Select AI is built around an **AI profile** — a named, stored configuration that tells the database which LLM provider to call, which credential to use, and which tables/views are in scope for schema-grounding:
+
+```sql
+-- 1. Store the LLM credential once
+BEGIN
+  DBMS_CLOUD.CREATE_CREDENTIAL(
+    credential_name => 'ANTHROPIC_CRED',
+    username        => 'ANTHROPIC',
+    password        => '<api-key>'
+  );
+END;
+/
+
+-- 2. Create a profile scoped to specific tables (this is the schema-grounding step —
+--    conceptually identical to SchemaService.schemaDescription() in this repo, but
+--    computed and cached by the database itself, not application code)
+BEGIN
+  DBMS_CLOUD_AI.CREATE_PROFILE(
+    profile_name => 'text2sql_demo',
+    attributes   => '{
+        "provider": "anthropic",
+        "credential_name": "ANTHROPIC_CRED",
+        "model": "claude-opus-4-8",
+        "object_list": [
+            {"owner": "APP_USER", "name": "CUSTOMERS"},
+            {"owner": "APP_USER", "name": "ORDERS"},
+            {"owner": "APP_USER", "name": "ORDER_ITEMS"},
+            {"owner": "APP_USER", "name": "PRODUCTS"}
+        ]
+    }'
+  );
+END;
+/
+
+-- 3. Activate it for the session
+EXEC DBMS_CLOUD_AI.SET_PROFILE('text2sql_demo');
+```
+
+### The "actions" — one feature, five behaviors
+
+Once a profile is active, the same `SELECT AI` syntax exposes five distinct behaviors via an `action` keyword. This is the part most people don't realize exists — it's not just "generate and run SQL", it's a small state machine:
+
+| Action | What it does | Analogous to, in this repo |
+|---|---|---|
+| `runsql` (default) | Generate SQL, execute it, return rows | `POST /api/v1/query` |
+| `showsql` | Generate SQL, return the SQL text only — **don't execute it** | `POST /api/v1/sql/generate` |
+| `narrate` | Generate SQL, execute it, then have the LLM turn the result set into a natural-language sentence | No equivalent — this repo returns raw rows |
+| `chat` | Skip SQL generation entirely; answer conversationally using the LLM's general knowledge | No equivalent — out of scope by design |
+| `explainsql` | Take **existing** SQL (not a question) and explain in English what it does | No equivalent — useful for reverse-engineering legacy queries |
+
+```sql
+-- Equivalent of this repo's /api/v1/query
+SELECT AI runsql What are the top 5 customers by total order amount in the last 90 days?
+
+-- Equivalent of this repo's /api/v1/sql/generate (dry run)
+SELECT AI showsql What are the top 5 customers by total order amount in the last 90 days?
+
+-- Something this repo intentionally does NOT do — narrate the result
+SELECT AI narrate How many orders were placed each month this year?
+-- → "You placed 42 orders in January, 38 in February, trending up through Q1..."
+```
+
+### What Select AI does that a hand-rolled pipeline has to build itself
+
+- **Schema introspection is automatic and cached** — the `object_list` in the profile tells Oracle which tables to describe to the LLM; it pulls column names, types, and comments itself (this repo's `SchemaService` reimplements exactly this against `ALL_TAB_COLUMNS`/`ALL_CONS_COLUMNS`).
+- **Provider abstraction is built in** — profiles support OpenAI, Cohere, Google Gemini, Anthropic (via a generic/OCI provider interface), and Oracle's own hosted models, switchable by re-pointing the `provider` attribute — conceptually the same as this repo's `LLM_PROVIDER` switch between Ollama and Anthropic, but as a database-level config instead of a Spring property.
+- **Multi-turn conversation state** (`chat` action) is tracked by the database across calls in a session, not by application code.
+- **No separate service to deploy** — Select AI lives inside the database process; there's no `TextToSqlService` JAR to build, containerize, or scale independently.
+
+### What it does *not* give you
+
+- **No custom validation layer.** `SqlGuard` in this repo — the single-statement check, the forbidden-keyword scan, the SELECT/WITH-only enforcement — has no Select AI equivalent. Select AI trusts the database's normal object privileges (the credentialed user's grants) as the only guardrail. If you need defense-in-depth *beyond* privileges (e.g., blocking `UTL_HTTP` calls smuggled inside an otherwise-valid `SELECT`, which is exactly what `SqlGuardTest.rejectsForbiddenKeywordSmuggledInsideSelect` covers), you write that yourself either way — inside or outside the database.
+- **No row-cap/timeout policy layer** independent of the session's normal resource limits — this repo's `hard-max-rows` and `query-timeout-seconds` are applied at the JDBC/Hikari level, not something Select AI manages per-question.
+- **No structured JSON contract.** `SqlGeneration` (`{answerable, sql, explanation}`) is a typed response shape a Java caller can branch on. Select AI's `narrate`/`chat` actions return prose; `runsql` returns a normal result set — there's no built-in "tell me if this was even answerable" boolean the way this repo's system prompt enforces.
+- **Not natively containerized/portable.** Select AI's behavior lives in the database; this repo's pipeline is a Spring Boot service you can run against *any* Oracle instance (or, with the Ollama provider, entirely offline, which is exactly why the docker-compose stack in this repo defaults to local Ollama with no external API key).
+
+## 4. Select AI RAG: retrieval over unstructured content
+
+Distinct from schema-grounded text-to-SQL, **Select AI RAG** targets the classic "answer from a pile of PDFs/docs" problem — but keeps the whole pipeline inside the database:
+
+1. Documents are loaded (via `DBMS_CLOUD` file transfer, or `VECTOR_CHUNKS`/`UTL_TO_TEXT`-family utilities that extract text from PDF/DOCX/etc.).
+2. Chunked and embedded automatically into `VECTOR` columns using a configured embedding model.
+3. At query time, `SELECT AI` with a RAG-scoped profile does the retrieval step (vector search over the chunks) and stuffs the top-k chunks into the LLM's context before generation — the same retrieve-then-generate pattern as any LangChain/LlamaIndex RAG pipeline, minus the separate vector store and the glue code.
+
+This is a genuinely different use case from Text2SQL — it answers "what does our onboarding policy say about refunds?" rather than "how many refunds did we process last quarter?" — but it shares the same underlying `VECTOR` infrastructure from §2, and the same `DBMS_CLOUD_AI` profile/credential model from §3. If this repo ever needed to answer *both* structured ("top 5 customers") and unstructured ("what's our return policy") questions from one endpoint, Select AI RAG is the natural place Oracle expects that to live — a single profile, a single `SELECT AI` call, routing internally between SQL generation and document retrieval based on the question.
+
+## 5. This repo's approach vs. Select AI — and when to pick each
+
+| | This repo (app-level Spring AI pipeline) | Select AI (in-database) |
+|---|---|---|
+| **Where SQL generation runs** | Java service process, calls out to Ollama/Anthropic over HTTP | Inside the database process, via `DBMS_CLOUD_AI` |
+| **Guardrails** | Custom `SqlGuard`: single-statement, SELECT/WITH-only, forbidden-keyword scan, row cap, query timeout — all explicit, testable Java code (see `SqlGuardTest`) | Relies on the credentialed DB user's object privileges; no independent statement-shape validation |
+| **LLM provider swap** | `LLM_PROVIDER` env var, Spring config | `provider` attribute on the AI profile |
+| **Offline/local-only operation** | Yes — Ollama provider needs no external network call | No — every provider Select AI supports is a hosted API; there's no "local model" profile type |
+| **Structured, typed response** | Yes — `SqlGeneration{answerable, sql, explanation}`, parsed via Spring AI structured output | No — plain result set (`runsql`) or prose (`narrate`/`chat`) |
+| **Auditability of the validation logic** | Lives in your own repo, in your own test suite, reviewable in a PR | Lives in Oracle's package internals — a black box you configure, not one you can unit-test |
+| **Deployment surface** | A separate Spring Boot service — one more thing to build, containerize, scale, monitor | Zero extra services — it's a SQL statement against your existing database |
+| **Multi-database portability** | The *service* is Oracle-specific (JDBC driver, dialect in the system prompt) but the *pattern* ports trivially to Postgres/MySQL by swapping the driver and prompt | Select AI is Oracle-only, by definition |
+| **Best fit** | Products that need custom guardrails, a stable API contract for downstream consumers, air-gapped/local-LLM deployment, or a validation layer that's independently testable and versioned in git | Internal analyst tooling, ad-hoc `SQL*Plus`/SQLcl exploration, or any case where "a DBA can type a question into a SQL prompt" is the whole requirement |
+
+**In short:** this repo re-implements, in application code, roughly the `runsql`/`showsql` slice of what Select AI gives you for free — but adds the guardrail and contract layer Select AI intentionally leaves to the caller, and adds the ability to run entirely against a local model with zero external network dependency. Neither is strictly better; they trade off "batteries included but Oracle-and-hosted-LLM-only" against "more code to own, but auditable, portable, and offline-capable."
+
+## 6. JSON Relational Duality: one row, two data models
+
+A second major 23ai/26ai feature, orthogonal to the AI/LLM story but part of the same "AI Database" release wave: **Duality Views** let the same underlying relational rows be read and written as either normalized relational tables *or* as nested JSON documents — fully consistent, no ETL, no dual-write.
+
+```sql
+CREATE JSON RELATIONAL DUALITY VIEW customer_orders_dv AS
+SELECT JSON {
+    'customerId'  : c.customer_id,
+    'name'        : c.name,
+    'orders'      : [
+        SELECT JSON {
+            'orderId' : o.order_id,
+            'status'  : o.status,
+            'items'   : [
+                SELECT JSON {'product': p.name, 'qty': oi.quantity}
+                FROM order_items oi JOIN products p ON p.product_id = oi.product_id
+                WHERE oi.order_id = o.order_id
+            ]
+        }
+        FROM orders o WHERE o.customer_id = c.customer_id
+    ]
+}
+FROM customers c;
+```
+
+A client can now `GET`/`PUT` a customer as a single nested JSON document (the shape a frontend developer wants, and exactly the shape MongoDB gives you) while the data is *actually* stored as clean 3NF relational rows underneath (the shape this repo's `SchemaService` introspects via `ALL_TAB_COLUMNS`/foreign keys, and the shape a BI/reporting tool wants). Writes through the JSON view are validated against the relational constraints (foreign keys, `NOT NULL`, etc.) automatically — something a hand-rolled "denormalize into Mongo" pipeline has to reimplement as application-level validation.
+
+Why it matters for a Text2SQL context specifically: the LLM in this repo generates relational `SELECT` statements against normalized tables (`customers`, `orders`, `order_items`) because that's the schema `SchemaService` describes to it. If the same data were *only* stored as MongoDB-style documents, there'd be no clean relational schema to ground the prompt with — Duality Views mean you can have both without picking one storage model up front.
+
+## 7. In-database machine learning (OML)
+
+**Oracle Machine Learning (OML)** predates the "23ai" branding but is squarely part of the same "don't move the data out to do AI" philosophy: classification, regression, clustering, anomaly detection, and time-series forecasting models trained and scored **via SQL**, directly against tables, with no data export to a Python/Spark cluster:
+
+```sql
+-- Train a classification model directly against a table
+BEGIN
+  DBMS_DATA_MINING.CREATE_MODEL(
+    model_name          => 'churn_predictor',
+    mining_function      => DBMS_DATA_MINING.CLASSIFICATION,
+    data_table_name      => 'customer_features',
+    case_id_column_name  => 'customer_id',
+    target_column_name   => 'churned'
+  );
+END;
+/
+
+-- Score new rows, in a normal SELECT
+SELECT customer_id, PREDICTION(churn_predictor USING *) AS churn_risk
+FROM   customer_features_new;
+```
+
+Relevance to this repo: nothing here is used directly, but it's the natural next step for a Text2SQL product — "which customers are likely to churn" is a question this repo's LLM *can't* answer today (there's no `churn_risk` column, and the guardrails intentionally forbid the kind of write/DDL access needed to build one on the fly), but it's exactly the kind of question OML is built to make answerable with a `PREDICTION()` call inside an ordinary `SELECT`, sitting right next to the relational joins the LLM already generates.
+
+## 8. Multi-model in one engine: graph, spatial, XML, text
+
+Beyond vectors and JSON, the same Oracle engine natively supports:
+
+- **Property Graph** (`CREATE PROPERTY GRAPH`, openCypher queries) — model and traverse networks (org charts, supply chains, fraud rings) without a separate Neo4j-style graph database.
+- **Spatial** (`SDO_GEOMETRY` type, spatial indexes) — geospatial queries (distance, containment, intersection) without PostGIS-equivalent bolt-ons.
+- **Oracle Text** — full-text indexing and search (`CONTEXT` indexes, `CONTAINS()` operator) — a lexical-search complement to the semantic `VECTOR_DISTANCE()` search from §2; the two can be combined in one query for hybrid lexical+semantic search.
+- **XML DB** — native XML storage/query (`XMLTYPE`, XQuery) for legacy XML-heavy integrations.
+
+The pattern repeats: rather than "pick a specialized database per data shape and federate across them at the application layer," Oracle's pitch is one ACID-compliant engine, one security model, one backup/DR story, covering relational + document + vector + graph + spatial + full-text simultaneously.
+
+## 9. Autonomous operations: self-tuning, self-patching, self-securing
+
+Orthogonal to the AI *data* features above, Oracle's **Autonomous Database** deployment model (which the `26ai` label commonly refers to when discussing Oracle's cloud offering, as distinct from the on-premises/container "Free" edition this repo's `docker-compose.yaml` uses) applies ML internally to operate the database itself:
+
+- **Automatic indexing** — the database observes query patterns and creates/drops indexes without a DBA writing `CREATE INDEX`.
+- **Automatic performance tuning** — SQL plan management adapts to changing data distributions without manual `EXPLAIN PLAN` archaeology.
+- **Zero-downtime patching and scaling** — storage/compute scale and security patches apply without a maintenance window.
+- **Built-in threat detection** — anomalous access pattern detection (e.g., a credential suddenly running full-table scans it's never run before) integrated at the platform level.
+
+This layer doesn't touch the Text2SQL pipeline directly, but it's worth knowing that "26ai" spans two distinct meanings depending on context: the **feature set** (vectors, Select AI, Duality Views — available in the free/container edition this repo runs against) and the **autonomous operations model** (available specifically on Oracle's managed cloud offering).
+
+## 10. How this compares to PostgreSQL, MySQL, and dedicated vector databases
+
+| Capability | Oracle 23ai/26ai | PostgreSQL + pgvector | MySQL 9+ | Dedicated vector DB (Pinecone/Weaviate/Milvus) |
+|---|---|---|---|---|
+| Native vector type + ANN index | Yes (`VECTOR`, HNSW/IVF-style) | Yes, via extension (`pgvector`) | Yes (MySQL 9 `VECTOR` type, HNSW) | Yes — it's the whole product |
+| Native NL→SQL in the engine | Yes (Select AI) | No — app-level only | No — app-level only | N/A (not a relational engine) |
+| Native RAG orchestration in-engine | Yes (Select AI RAG) | No — app-level (LangChain, etc.) | No | Partial — retrieval only, generation is external |
+| JSON *and* relational, same physical rows, both fully queryable/writable | Yes (Duality Views) | Partial (`JSONB` column, but not a dual live-view over normalized tables) | Partial (`JSON` column, same limitation) | N/A |
+| In-database ML scoring via SQL | Yes (OML) | Partial (via extensions like MADlib, less integrated) | No | N/A |
+| Mature ACID relational core | Yes (decades) | Yes (decades) | Yes (decades) | No — eventually-consistent, not ACID |
+| Open source / no license cost | No | Yes | Yes (community edition) | Varies (mostly proprietary SaaS) |
+| Operational maturity for OLTP at enterprise scale | Very high | Very high | High | N/A — not built for OLTP |
+
+**Reading this table honestly:** Postgres with `pgvector` covers the §2 vector-search primitive well and is free — if all you need is "add semantic search to Postgres," that's usually the pragmatic choice, and it's exactly the architecture this repo's `LLM_PROVIDER=ollama` path is compatible with if you ever swap the JDBC driver. Oracle's differentiation is specifically in **bundling the orchestration layer** (Select AI, Select AI RAG, Duality Views, OML) *inside the engine* rather than requiring you to write and operate that orchestration yourself — which is precisely the trade this repo makes the opposite way: it builds that orchestration in Spring AI/Java instead of relying on `DBMS_CLOUD_AI`, in exchange for the guardrail/portability/offline benefits in §5.
+
+## 11. Other use cases worth knowing about
+
+Beyond Text2SQL, the same "AI Database" surface area is being used in production for:
+
+- **Semantic product/document search** — replace keyword search with `VECTOR_DISTANCE()` similarity over product descriptions, support tickets, or knowledge-base articles, joined against normal relational metadata (price, availability, customer tier) in a single query.
+- **RAG chatbots grounded on private data** — Select AI RAG (§4) or an app-level equivalent, querying embedded internal documents instead of (or alongside) the public web.
+- **Recommendation engines** — nearest-neighbor search over user/item embedding vectors, joined against purchase history tables for business-rule filtering ("recommend similar products, but only in stock, only above 3-star rating").
+- **Fraud/anomaly detection** — OML anomaly-detection models scoring transactions in real time via `PREDICTION()`, combined with Property Graph traversal to find rings of related accounts.
+- **Natural-language BI/reporting for non-technical users** — the `narrate` action (§3) turning a `SELECT AI` result into a plain-English sentence for a dashboard, rather than a raw table.
+- **Hybrid lexical + semantic search** — combining Oracle Text's `CONTAINS()` keyword search with `VECTOR_DISTANCE()` semantic search in one query, useful when exact-term matches (product SKUs, error codes) and conceptual matches (customer intent) both matter.
+- **Master data unification** — Duality Views (§6) letting a document-oriented microservice and a relational reporting pipeline both operate on one physical copy of customer/product data, instead of syncing two databases.
+- **Legacy SQL comprehension** — the `explainsql` action (§3) turning inherited, undocumented queries into a plain-English explanation, useful for onboarding engineers onto an unfamiliar codebase's data layer.
+
+## 12. Glossary
+
+| Term | Meaning |
+|---|---|
+| **AI Vector Search** | Oracle's native `VECTOR` data type + ANN indexing for semantic similarity search |
+| **Select AI** | `DBMS_CLOUD_AI`-powered natural-language-to-SQL feature, invoked via `SELECT AI <action> <question>` |
+| **Select AI RAG** | Retrieval-augmented generation over embedded unstructured documents, using the same Select AI profile/credential infrastructure |
+| **AI Profile** | A named, stored `DBMS_CLOUD_AI` configuration: LLM provider, credential, and in-scope schema objects |
+| **JSON Relational Duality View** | A view exposing the same underlying rows as both fully-queryable/writable JSON documents and normalized relational tables |
+| **OML (Oracle Machine Learning)** | In-database model training/scoring via SQL/PL/SQL, no data export required |
+| **Autonomous Database** | Oracle's managed cloud deployment model adding self-tuning, self-patching, self-securing operations on top of the same engine |
+| **HNSW / IVF (Neighbor Partitions)** | The two vector index organizations Oracle supports — graph-based in-memory (HNSW) vs. partitioned for larger-than-memory vector sets |
+| **Duality View vs. this repo's `SchemaService`** | Duality Views change what shape the data is *served* as (JSON vs. relational); `SchemaService` only *describes* the existing relational shape to an LLM — the two solve different problems |
+
+---
+
+*This section is written from general, publicly documented Oracle AI Database capabilities (Select AI, AI Vector Search, JSON Relational Duality, OML, Autonomous Database) as of the 23ai/26ai release family. Exact package names, action keywords, and SQL syntax shown are illustrative of the documented feature shape — verify against the specific Oracle Database 26ai release notes and `DBMS_CLOUD_AI` package reference for your target deployment before using in production, since AI-feature syntax has evolved across point releases.*
