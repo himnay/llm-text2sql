@@ -21,43 +21,50 @@ Database schema is versioned with **Flyway** (`src/main/resources/db/migration`)
 
 ## Configuration
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` (local) or `anthropic` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server |
-| `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model (good SQL model at 7B) |
-| `ANTHROPIC_API_KEY` | — | Required only when `LLM_PROVIDER=anthropic` |
-| `ORACLE_URL` | `jdbc:oracle:thin:@//localhost:1521/FREEPDB1` | JDBC URL |
-| `ORACLE_USERNAME` | `app_user` | DB user |
-| `ORACLE_PASSWORD` | `AppPassword1` | DB password — matches the `docker-compose.yaml` default; override both together |
-| `TEXT2SQL_SCHEMA_OWNER` | `ORACLE_USERNAME` | Schema to introspect and query |
+| Env var                      | Default                                       | Purpose                                                                                                                                                                                                 |
+|------------------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LLM_PROVIDER`               | `ollama`                                      | `ollama` (local) or `anthropic`                                                                                                                                                                         |
+| `OLLAMA_BASE_URL`            | `http://localhost:11434`                      | Ollama server                                                                                                                                                                                           |
+| `OLLAMA_MODEL`               | `qwen2.5-coder:7b`                            | Local model (good SQL model at 7B)                                                                                                                                                                      |
+| `ANTHROPIC_API_KEY`          | —                                             | Required only when `LLM_PROVIDER=anthropic`                                                                                                                                                             |
+| `ORACLE_URL`                 | `jdbc:oracle:thin:@//localhost:1521/FREEPDB1` | JDBC URL                                                                                                                                                                                                |
+| `ORACLE_USERNAME`            | `text2sql`                                    | DB user                                                                                                                                                                                                 |
+| `ORACLE_PASSWORD`            | `text2sql`                                | DB password — matches the `docker-compose.yaml` default; override both together                                                                                                                         |
+| `TEXT2SQL_SCHEMA_OWNER`      | `ORACLE_USERNAME`                             | Schema to introspect and query                                                                                                                                                                          |
+| `TEXT2SQL_SELECT_AI_PROFILE` | `TEXT2SQL_DEMO`                               | Name of the `DBMS_CLOUD_AI` profile activated for `/api/v1/select-ai/query` — see [Native Oracle Select AI passthrough](#native-oracle-select-ai-passthrough) below |
+| `SELECT_AI_PROVIDER` | `openai` | Provider used by `/api/v1/select-ai/setup` (`openai`, `cohere`, `gemini`, `oci`) |
+| `SELECT_AI_MODEL` | `gpt-4.1-mini` | Model name passed to `DBMS_CLOUD_AI.CREATE_PROFILE` by `/api/v1/select-ai/setup` |
+| `SELECT_AI_PROVIDER_API_KEY` | — | Provider API key used by `/api/v1/select-ai/setup`; never accepted in the request body, only this env var |
 
 Tunables under `app.text2sql` in `application.yaml`: `default-max-rows` (100), `hard-max-rows` (1000), `query-timeout-seconds` (30).
 
 ## Run
 
-Docker Compose starts only the infra (Oracle Free 26ai + Ollama, auto-pulling the model); run the app itself locally:
+Docker Compose starts only Oracle Free 26ai. Ollama is expected to already be running on the host (e.g. as a system service — see below) with `OLLAMA_MODEL` already pulled; run the app itself locally:
 
 ```sh
-docker compose up          # starts oracle + ollama, waits on healthchecks
-mvn spring-boot:run         # app connects to localhost:1521 / localhost:11434
+docker compose up oracle   # starts oracle only, waits on healthcheck
+mvn spring-boot:run         # app connects to localhost:1521 and to the host's localhost:11434
 ```
 
-- Oracle `localhost:1521/FREEPDB1`, Ollama `localhost:11434`. Both cached in volumes across restarts (`docker compose down -v` resets, including the database).
+- Oracle `localhost:1521/FREEPDB1`, cached in a volume across restarts (`docker compose down -v` resets, including the database).
 - Flyway creates and seeds the demo schema on first app start.
-- First `docker compose up` is slow: Oracle initializes and Ollama downloads ~5 GB model.
+- First `docker compose up oracle` is slow: Oracle initializes its data files.
 - To use Claude instead of the local model: `LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... mvn spring-boot:run`
-- NVIDIA GPU for Ollama: uncomment the `deploy` block on the `ollama` service in `docker-compose.yaml`.
+- `docker-compose.yaml` also ships an `ollama` service (containerized, for environments with no host Ollama) — `docker compose up` (no service name) starts both, but the container will fail to bind `11434` if a host Ollama is already listening on it. Pick one: host Ollama (default assumption here) or `docker compose up ollama` (stop the host service first).
+- NVIDIA GPU for the containerized Ollama: uncomment the `deploy` block on the `ollama` service in `docker-compose.yaml`.
 
 ## API
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/v1/query` | Generate SQL, execute, return rows |
-| POST | `/api/v1/sql/generate` | Generate SQL only (dry run) |
-| GET | `/api/v1/schema` | Current schema snapshot |
-| POST | `/api/v1/schema/refresh` | Rebuild snapshot after migrations |
-| GET | `/actuator/health` | Health probe |
+| Method | Path                      | Description                                                                                                                          |
+|--------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| POST   | `/api/v1/query`           | Generate SQL, execute, return rows (app-level Spring AI pipeline)                                                                    |
+| POST   | `/api/v1/sql/generate`    | Generate SQL only (dry run)                                                                                                          |
+| POST   | `/api/v1/select-ai/query` | Send the question straight to Oracle's native Select AI — the **database** generates and executes the SQL, this app just relays rows |
+| POST   | `/api/v1/select-ai/setup` | One-time (idempotent) bootstrap of the `DBMS_CLOUD_AI` credential + profile, using `SELECT_AI_PROVIDER_API_KEY` |
+| GET    | `/api/v1/schema`          | Current schema snapshot                                                                                                              |
+| POST   | `/api/v1/schema/refresh`  | Rebuild snapshot after migrations                                                                                                    |
+| GET    | `/actuator/health`        | Health probe                                                                                                                         |
 
 Example:
 
@@ -68,6 +75,110 @@ curl -s localhost:8080/api/v1/query \
 ```
 
 Error mapping: `400` invalid request, `422` SQL rejected / question unanswerable / execution error, `502` model failure.
+
+Same request shape against the native passthrough — the database, not this app, decides the SQL:
+
+```sh
+curl -s localhost:8080/api/v1/select-ai/query \
+  -H 'content-type: application/json' \
+  -d '{"question": "Top 5 customers by total order amount", "maxRows": 50}'
+```
+
+## Native Oracle Select AI passthrough
+
+`POST /api/v1/select-ai/query` (`SelectAiService`) skips this app's own Spring AI pipeline entirely. It sends the question straight to Oracle's built-in **Select AI** feature (`DBMS_CLOUD_AI`): the *database* calls its own configured LLM provider, generates the SQL, executes it, and hands back rows — this app only activates the AI profile and relays the `ResultSet`. No `ChatClient`, no `SchemaService` snapshot, no `SqlGuard`. This is the concrete, running implementation of the comparison discussed in the [Deep Dive](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each) below; the setup here follows the walkthrough in the [LinkedIn article](#reference) linked at the end of this file.
+
+### One-time database setup (run once, as a privileged user, before calling this endpoint)
+
+1. **Open network access** so the database can reach the LLM provider's API (skip if the provider is OCI GenAI, which stays inside Oracle Cloud):
+
+   ```sql
+   BEGIN
+     DBMS_NETWORK_ACL_ADMIN.append_host_ace(
+       host  => 'api.openai.com',   -- or the relevant provider host
+       ace   => xs$ace_type(privilege_list => xs$name_list('http'),
+                             principal_name => 'ADMIN',
+                             principal_type => xs_acl.ptype_db));
+   END;
+   /
+   ```
+
+2. **Grant the packages** the profile and this endpoint need:
+
+   ```sql
+   GRANT EXECUTE ON DBMS_CLOUD TO text2sql;
+   GRANT EXECUTE ON DBMS_CLOUD_AI TO text2sql;
+   ```
+
+Steps 1–2 need an ADMIN connection and only run once per database. After that, the credential + profile (steps 3–4 below) can be created either by hand, or automatically by this app:
+
+```sh
+export SELECT_AI_PROVIDER_API_KEY=sk-...          # your OpenAI/Cohere/Gemini key
+curl -s -X POST localhost:8080/api/v1/select-ai/setup \
+  -H 'content-type: application/json' \
+  -d '{"provider": "openai", "model": "gpt-4.1-mini"}'   # body optional, falls back to SELECT_AI_PROVIDER / SELECT_AI_MODEL
+```
+
+`SelectAiService.bootstrapProfile()` (called by `POST /api/v1/select-ai/setup`) does exactly steps 3–4 below itself: it reads the tables currently visible to `TEXT2SQL_SCHEMA_OWNER` (same query `SchemaService` uses), builds the `object_list` from them, and calls `DBMS_CLOUD.CREATE_CREDENTIAL` + `DBMS_CLOUD_AI.CREATE_PROFILE` using the API key from `SELECT_AI_PROVIDER_API_KEY` — an env var, never accepted in the request body, so the key never lands in request logs or an Insomnia history file. It's idempotent (drops any existing credential/profile of the same name first), so re-running it after rotating the key or changing provider/model is safe. It only works once steps 1–2 have granted `EXECUTE` on both packages — this endpoint runs as the regular app schema user, not ADMIN.
+
+The manual equivalent, for reference or if you'd rather not hand the app a key:
+
+3. **Store the provider credential** once:
+
+   ```sql
+   BEGIN
+     DBMS_CLOUD.CREATE_CREDENTIAL(
+       credential_name => 'TEXT2SQL_DEMO_CRED',
+       username        => 'OPENAI',        -- placeholder; the field the provider expects
+       password        => '<your-provider-api-key>'
+     );
+   END;
+   /
+   ```
+
+4. **Create the AI profile**, scoped to the same tables `SchemaService` already introspects — the name here must match `TEXT2SQL_SELECT_AI_PROFILE` (default `TEXT2SQL_DEMO`):
+
+   ```sql
+   BEGIN
+     DBMS_CLOUD_AI.CREATE_PROFILE(
+       profile_name => 'TEXT2SQL_DEMO',
+       attributes   => '{
+           "provider": "openai",
+           "model": "gpt-4.1-mini",
+           "credential_name": "TEXT2SQL_DEMO_CRED",
+           "object_list": [
+               {"owner": "TEXT2SQL", "name": "CUSTOMERS"},
+               {"owner": "TEXT2SQL", "name": "ORDERS"},
+               {"owner": "TEXT2SQL", "name": "ORDER_ITEMS"},
+               {"owner": "TEXT2SQL", "name": "PRODUCTS"}
+           ],
+           "conversation": "true"
+       }'
+     );
+   END;
+   /
+   ```
+
+   `provider` also accepts `gemini`, `cohere`, or `oci` — anything Oracle's own docs list for `DBMS_CLOUD_AI` on your release. Requires Autonomous Database **26ai** (or a container/Free image with Select AI enabled); the `docker-compose.yaml` Oracle Free image in this repo does not ship Select AI, so this endpoint targets a real Autonomous instance — OCI's Always Free tier Autonomous Database qualifies.
+
+### What the endpoint does at request time
+
+`SelectAiService.ask()` runs two statements on **one borrowed connection** (not two separate `JdbcTemplate` calls — `DBMS_CLOUD_AI.SET_PROFILE` is session-scoped, so it has to land on the exact physical connection the following query runs on, which a pooled `DataSource` doesn't guarantee across separate calls):
+
+```sql
+EXEC DBMS_CLOUD_AI.SET_PROFILE('TEXT2SQL_DEMO');
+SELECT AI runsql What are the top 5 customers by total order amount in the last 90 days?
+```
+
+`SELECT AI` supports other action keywords the same way (`showsql`, `narrate`, `chat`, `explainsql`, `showprompt` — see §3 of the Deep Dive) — this endpoint always uses `runsql` since that's the one-to-one equivalent of `/api/v1/query`. Wire up the others as separate endpoints/actions the same way if needed.
+
+### Privacy note
+
+Per Oracle's documented behavior (and confirmed in the article above): only schema metadata — table/column names and comments, i.e. exactly what `object_list` scopes the profile to — is sent to the LLM provider. Row data is never sent; the generated SQL runs locally against the database and only the *results* come back to the caller.
+
+### Guardrails differ from `/api/v1/query`
+
+This endpoint intentionally has none of `SqlGuard`'s statement-shape checks (no forbidden-keyword scan, no single-statement enforcement beyond a `;` rejection to stop naive multi-statement injection through the concatenated question text). Trust boundary is Oracle's own object privileges on the credentialed user, exactly as described in [§5](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each) — grant that user `SELECT` only in production, the same recommendation as the [Security notes](#security-notes) above.
 
 ## Insomnia
 
@@ -110,12 +221,12 @@ Oracle's bet with the 23ai release (and continued in 26ai) is that the *vector i
 
 Concretely, "AI Database" bundles four previously-separate concerns into one product:
 
-| Concern | Old way (multi-system) | Oracle 23ai/26ai way |
-|---|---|---|
-| Store embeddings for semantic search | Pinecone / Weaviate / Milvus | `VECTOR` column type, native `VECTOR_DISTANCE()` |
-| Generate SQL from natural language | Custom app code calling an LLM (what this repo does) | `DBMS_CLOUD_AI` package (**Select AI**) |
-| Retrieve unstructured docs for RAG | LangChain + vector store + separate doc store | **Select AI RAG** — vectorize, chunk, retrieve, and generate in-database |
-| Serve both relational and document (JSON) shapes of the same data | Denormalize into Mongo *and* Postgres, sync both | **JSON Relational Duality Views** — one physical row, two logical shapes |
+| Concern                                                           | Old way (multi-system)                               | Oracle 23ai/26ai way                                                     |
+|-------------------------------------------------------------------|------------------------------------------------------|--------------------------------------------------------------------------|
+| Store embeddings for semantic search                              | Pinecone / Weaviate / Milvus                         | `VECTOR` column type, native `VECTOR_DISTANCE()`                         |
+| Generate SQL from natural language                                | Custom app code calling an LLM (what this repo does) | `DBMS_CLOUD_AI` package (**Select AI**)                                  |
+| Retrieve unstructured docs for RAG                                | LangChain + vector store + separate doc store        | **Select AI RAG** — vectorize, chunk, retrieve, and generate in-database |
+| Serve both relational and document (JSON) shapes of the same data | Denormalize into Mongo *and* Postgres, sync both     | **JSON Relational Duality Views** — one physical row, two logical shapes |
 
 None of this is exotic. It's the same relational engine you already know (same `SELECT`, same `JOIN`, same ACID transactions, same `SQL*Plus`/JDBC access this repo already uses), with new **data types**, new **PL/SQL packages**, and new **index types** layered on top. If you can write a `SELECT`, you can already query a vector index — you just call `VECTOR_DISTANCE(embedding_col, :query_vector, COSINE)` in the `ORDER BY` clause instead of a normal comparison.
 
@@ -200,13 +311,13 @@ EXEC DBMS_CLOUD_AI.SET_PROFILE('text2sql_demo');
 
 Once a profile is active, the same `SELECT AI` syntax exposes five distinct behaviors via an `action` keyword. This is the part most people don't realize exists — it's not just "generate and run SQL", it's a small state machine:
 
-| Action | What it does | Analogous to, in this repo |
-|---|---|---|
-| `runsql` (default) | Generate SQL, execute it, return rows | `POST /api/v1/query` |
-| `showsql` | Generate SQL, return the SQL text only — **don't execute it** | `POST /api/v1/sql/generate` |
-| `narrate` | Generate SQL, execute it, then have the LLM turn the result set into a natural-language sentence | No equivalent — this repo returns raw rows |
-| `chat` | Skip SQL generation entirely; answer conversationally using the LLM's general knowledge | No equivalent — out of scope by design |
-| `explainsql` | Take **existing** SQL (not a question) and explain in English what it does | No equivalent — useful for reverse-engineering legacy queries |
+| Action             | What it does                                                                                     | Analogous to, in this repo                                    |
+|--------------------|--------------------------------------------------------------------------------------------------|---------------------------------------------------------------|
+| `runsql` (default) | Generate SQL, execute it, return rows                                                            | `POST /api/v1/query`                                          |
+| `showsql`          | Generate SQL, return the SQL text only — **don't execute it**                                    | `POST /api/v1/sql/generate`                                   |
+| `narrate`          | Generate SQL, execute it, then have the LLM turn the result set into a natural-language sentence | No equivalent — this repo returns raw rows                    |
+| `chat`             | Skip SQL generation entirely; answer conversationally using the LLM's general knowledge          | No equivalent — out of scope by design                        |
+| `explainsql`       | Take **existing** SQL (not a question) and explain in English what it does                       | No equivalent — useful for reverse-engineering legacy queries |
 
 ```sql
 -- Equivalent of this repo's /api/v1/query
@@ -246,17 +357,17 @@ This is a genuinely different use case from Text2SQL — it answers "what does o
 
 ## 5. This repo's approach vs. Select AI — and when to pick each
 
-| | This repo (app-level Spring AI pipeline) | Select AI (in-database) |
-|---|---|---|
-| **Where SQL generation runs** | Java service process, calls out to Ollama/Anthropic over HTTP | Inside the database process, via `DBMS_CLOUD_AI` |
-| **Guardrails** | Custom `SqlGuard`: single-statement, SELECT/WITH-only, forbidden-keyword scan, row cap, query timeout — all explicit, testable Java code (see `SqlGuardTest`) | Relies on the credentialed DB user's object privileges; no independent statement-shape validation |
-| **LLM provider swap** | `LLM_PROVIDER` env var, Spring config | `provider` attribute on the AI profile |
-| **Offline/local-only operation** | Yes — Ollama provider needs no external network call | No — every provider Select AI supports is a hosted API; there's no "local model" profile type |
-| **Structured, typed response** | Yes — `SqlGeneration{answerable, sql, explanation}`, parsed via Spring AI structured output | No — plain result set (`runsql`) or prose (`narrate`/`chat`) |
-| **Auditability of the validation logic** | Lives in your own repo, in your own test suite, reviewable in a PR | Lives in Oracle's package internals — a black box you configure, not one you can unit-test |
-| **Deployment surface** | A separate Spring Boot service — one more thing to build, containerize, scale, monitor | Zero extra services — it's a SQL statement against your existing database |
-| **Multi-database portability** | The *service* is Oracle-specific (JDBC driver, dialect in the system prompt) but the *pattern* ports trivially to Postgres/MySQL by swapping the driver and prompt | Select AI is Oracle-only, by definition |
-| **Best fit** | Products that need custom guardrails, a stable API contract for downstream consumers, air-gapped/local-LLM deployment, or a validation layer that's independently testable and versioned in git | Internal analyst tooling, ad-hoc `SQL*Plus`/SQLcl exploration, or any case where "a DBA can type a question into a SQL prompt" is the whole requirement |
+|                                          | This repo (app-level Spring AI pipeline)                                                                                                                                                        | Select AI (in-database)                                                                                                                                 |
+|------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Where SQL generation runs**            | Java service process, calls out to Ollama/Anthropic over HTTP                                                                                                                                   | Inside the database process, via `DBMS_CLOUD_AI`                                                                                                        |
+| **Guardrails**                           | Custom `SqlGuard`: single-statement, SELECT/WITH-only, forbidden-keyword scan, row cap, query timeout — all explicit, testable Java code (see `SqlGuardTest`)                                   | Relies on the credentialed DB user's object privileges; no independent statement-shape validation                                                       |
+| **LLM provider swap**                    | `LLM_PROVIDER` env var, Spring config                                                                                                                                                           | `provider` attribute on the AI profile                                                                                                                  |
+| **Offline/local-only operation**         | Yes — Ollama provider needs no external network call                                                                                                                                            | No — every provider Select AI supports is a hosted API; there's no "local model" profile type                                                           |
+| **Structured, typed response**           | Yes — `SqlGeneration{answerable, sql, explanation}`, parsed via Spring AI structured output                                                                                                     | No — plain result set (`runsql`) or prose (`narrate`/`chat`)                                                                                            |
+| **Auditability of the validation logic** | Lives in your own repo, in your own test suite, reviewable in a PR                                                                                                                              | Lives in Oracle's package internals — a black box you configure, not one you can unit-test                                                              |
+| **Deployment surface**                   | A separate Spring Boot service — one more thing to build, containerize, scale, monitor                                                                                                          | Zero extra services — it's a SQL statement against your existing database                                                                               |
+| **Multi-database portability**           | The *service* is Oracle-specific (JDBC driver, dialect in the system prompt) but the *pattern* ports trivially to Postgres/MySQL by swapping the driver and prompt                              | Select AI is Oracle-only, by definition                                                                                                                 |
+| **Best fit**                             | Products that need custom guardrails, a stable API contract for downstream consumers, air-gapped/local-LLM deployment, or a validation layer that's independently testable and versioned in git | Internal analyst tooling, ad-hoc `SQL*Plus`/SQLcl exploration, or any case where "a DBA can type a question into a SQL prompt" is the whole requirement |
 
 **In short:** this repo re-implements, in application code, roughly the `runsql`/`showsql` slice of what Select AI gives you for free — but adds the guardrail and contract layer Select AI intentionally leaves to the caller, and adds the ability to run entirely against a local model with zero external network dependency. Neither is strictly better; they trade off "batteries included but Oracle-and-hosted-LLM-only" against "more code to own, but auditable, portable, and offline-capable."
 
@@ -337,16 +448,16 @@ This layer doesn't touch the Text2SQL pipeline directly, but it's worth knowing 
 
 ## 10. How this compares to PostgreSQL, MySQL, and dedicated vector databases
 
-| Capability | Oracle 23ai/26ai | PostgreSQL + pgvector | MySQL 9+ | Dedicated vector DB (Pinecone/Weaviate/Milvus) |
-|---|---|---|---|---|
-| Native vector type + ANN index | Yes (`VECTOR`, HNSW/IVF-style) | Yes, via extension (`pgvector`) | Yes (MySQL 9 `VECTOR` type, HNSW) | Yes — it's the whole product |
-| Native NL→SQL in the engine | Yes (Select AI) | No — app-level only | No — app-level only | N/A (not a relational engine) |
-| Native RAG orchestration in-engine | Yes (Select AI RAG) | No — app-level (LangChain, etc.) | No | Partial — retrieval only, generation is external |
-| JSON *and* relational, same physical rows, both fully queryable/writable | Yes (Duality Views) | Partial (`JSONB` column, but not a dual live-view over normalized tables) | Partial (`JSON` column, same limitation) | N/A |
-| In-database ML scoring via SQL | Yes (OML) | Partial (via extensions like MADlib, less integrated) | No | N/A |
-| Mature ACID relational core | Yes (decades) | Yes (decades) | Yes (decades) | No — eventually-consistent, not ACID |
-| Open source / no license cost | No | Yes | Yes (community edition) | Varies (mostly proprietary SaaS) |
-| Operational maturity for OLTP at enterprise scale | Very high | Very high | High | N/A — not built for OLTP |
+| Capability                                                               | Oracle 23ai/26ai               | PostgreSQL + pgvector                                                     | MySQL 9+                                 | Dedicated vector DB (Pinecone/Weaviate/Milvus)   |
+|--------------------------------------------------------------------------|--------------------------------|---------------------------------------------------------------------------|------------------------------------------|--------------------------------------------------|
+| Native vector type + ANN index                                           | Yes (`VECTOR`, HNSW/IVF-style) | Yes, via extension (`pgvector`)                                           | Yes (MySQL 9 `VECTOR` type, HNSW)        | Yes — it's the whole product                     |
+| Native NL→SQL in the engine                                              | Yes (Select AI)                | No — app-level only                                                       | No — app-level only                      | N/A (not a relational engine)                    |
+| Native RAG orchestration in-engine                                       | Yes (Select AI RAG)            | No — app-level (LangChain, etc.)                                          | No                                       | Partial — retrieval only, generation is external |
+| JSON *and* relational, same physical rows, both fully queryable/writable | Yes (Duality Views)            | Partial (`JSONB` column, but not a dual live-view over normalized tables) | Partial (`JSON` column, same limitation) | N/A                                              |
+| In-database ML scoring via SQL                                           | Yes (OML)                      | Partial (via extensions like MADlib, less integrated)                     | No                                       | N/A                                              |
+| Mature ACID relational core                                              | Yes (decades)                  | Yes (decades)                                                             | Yes (decades)                            | No — eventually-consistent, not ACID             |
+| Open source / no license cost                                            | No                             | Yes                                                                       | Yes (community edition)                  | Varies (mostly proprietary SaaS)                 |
+| Operational maturity for OLTP at enterprise scale                        | Very high                      | Very high                                                                 | High                                     | N/A — not built for OLTP                         |
 
 **Reading this table honestly:** Postgres with `pgvector` covers the §2 vector-search primitive well and is free — if all you need is "add semantic search to Postgres," that's usually the pragmatic choice, and it's exactly the architecture this repo's `LLM_PROVIDER=ollama` path is compatible with if you ever swap the JDBC driver. Oracle's differentiation is specifically in **bundling the orchestration layer** (Select AI, Select AI RAG, Duality Views, OML) *inside the engine* rather than requiring you to write and operate that orchestration yourself — which is precisely the trade this repo makes the opposite way: it builds that orchestration in Spring AI/Java instead of relying on `DBMS_CLOUD_AI`, in exchange for the guardrail/portability/offline benefits in §5.
 
@@ -365,18 +476,23 @@ Beyond Text2SQL, the same "AI Database" surface area is being used in production
 
 ## 12. Glossary
 
-| Term | Meaning |
-|---|---|
-| **AI Vector Search** | Oracle's native `VECTOR` data type + ANN indexing for semantic similarity search |
-| **Select AI** | `DBMS_CLOUD_AI`-powered natural-language-to-SQL feature, invoked via `SELECT AI <action> <question>` |
-| **Select AI RAG** | Retrieval-augmented generation over embedded unstructured documents, using the same Select AI profile/credential infrastructure |
-| **AI Profile** | A named, stored `DBMS_CLOUD_AI` configuration: LLM provider, credential, and in-scope schema objects |
-| **JSON Relational Duality View** | A view exposing the same underlying rows as both fully-queryable/writable JSON documents and normalized relational tables |
-| **OML (Oracle Machine Learning)** | In-database model training/scoring via SQL/PL/SQL, no data export required |
-| **Autonomous Database** | Oracle's managed cloud deployment model adding self-tuning, self-patching, self-securing operations on top of the same engine |
-| **HNSW / IVF (Neighbor Partitions)** | The two vector index organizations Oracle supports — graph-based in-memory (HNSW) vs. partitioned for larger-than-memory vector sets |
+| Term                                             | Meaning                                                                                                                                                                                    |
+|--------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **AI Vector Search**                             | Oracle's native `VECTOR` data type + ANN indexing for semantic similarity search                                                                                                           |
+| **Select AI**                                    | `DBMS_CLOUD_AI`-powered natural-language-to-SQL feature, invoked via `SELECT AI <action> <question>`                                                                                       |
+| **Select AI RAG**                                | Retrieval-augmented generation over embedded unstructured documents, using the same Select AI profile/credential infrastructure                                                            |
+| **AI Profile**                                   | A named, stored `DBMS_CLOUD_AI` configuration: LLM provider, credential, and in-scope schema objects                                                                                       |
+| **JSON Relational Duality View**                 | A view exposing the same underlying rows as both fully-queryable/writable JSON documents and normalized relational tables                                                                  |
+| **OML (Oracle Machine Learning)**                | In-database model training/scoring via SQL/PL/SQL, no data export required                                                                                                                 |
+| **Autonomous Database**                          | Oracle's managed cloud deployment model adding self-tuning, self-patching, self-securing operations on top of the same engine                                                              |
+| **HNSW / IVF (Neighbor Partitions)**             | The two vector index organizations Oracle supports — graph-based in-memory (HNSW) vs. partitioned for larger-than-memory vector sets                                                       |
 | **Duality View vs. this repo's `SchemaService`** | Duality Views change what shape the data is *served* as (JSON vs. relational); `SchemaService` only *describes* the existing relational shape to an LLM — the two solve different problems |
 
 ---
 
 *This section is written from general, publicly documented Oracle AI Database capabilities (Select AI, AI Vector Search, JSON Relational Duality, OML, Autonomous Database) as of the 23ai/26ai release family. Exact package names, action keywords, and SQL syntax shown are illustrative of the documented feature shape — verify against the specific Oracle Database 26ai release notes and `DBMS_CLOUD_AI` package reference for your target deployment before using in production, since AI-feature syntax has evolved across point releases.*
+
+## Reference
+
+- [Talk to Your Data: A Hands-On Guide to Oracle Autonomous Database Select AI](https://www.linkedin.com/pulse/talk-your-data-hands-on-guide-oracle-autonomous-database-abhijith-s-j-rwbkc) 
+- walkthrough this repo's [Native Oracle Select AI passthrough](#native-oracle-select-ai-passthrough) section and `SelectAiService` implementation follow: ACL setup, credential creation, `DBMS_CLOUD_AI.CREATE_PROFILE` attributes, and the `SELECT AI runsql` / `showsql` / `narrate` / `chat` / `explainsql` / `showprompt` action keywords.

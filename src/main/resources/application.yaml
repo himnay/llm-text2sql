@@ -8,8 +8,8 @@ spring:
     name: llm-text2sql
   datasource:
     url: ${ORACLE_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}
-    username: ${ORACLE_USERNAME:app_user}
-    password: ${ORACLE_PASSWORD:AppPassword1}
+    username: ${ORACLE_USERNAME:text2sql}
+    password: ${ORACLE_PASSWORD:text2sql}
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
       pool-name: text2sql-pool
@@ -19,8 +19,8 @@ spring:
       read-only: true
   flyway:
     url: ${ORACLE_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}
-    user: ${ORACLE_USERNAME:app_user}
-    password: ${ORACLE_PASSWORD:AppPassword1}
+    user: ${ORACLE_USERNAME:text2sql}
+    password: ${ORACLE_PASSWORD:text2sql}
     locations: classpath:db/migration
     baseline-on-migrate: true
   ai:
@@ -73,7 +73,11 @@ app:
     database: Oracle Database 26ai
     llm-provider: ${LLM_PROVIDER:ollama}
   text2sql:
-    schema-owner: ${TEXT2SQL_SCHEMA_OWNER:${ORACLE_USERNAME:app_user}}
+    schema-owner: ${TEXT2SQL_SCHEMA_OWNER:${ORACLE_USERNAME:text2sql}}
     default-max-rows: 100
     hard-max-rows: 1000
     query-timeout-seconds: 30
+    select-ai-profile: ${TEXT2SQL_SELECT_AI_PROFILE:TEXT2SQL_DEMO}
+    select-ai-provider: ${SELECT_AI_PROVIDER:openai}
+    select-ai-model: ${SELECT_AI_MODEL:gpt-4.1-mini}
+    select-ai-provider-api-key: ${SELECT_AI_PROVIDER_API_KEY:}

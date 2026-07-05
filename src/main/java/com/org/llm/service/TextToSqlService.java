@@ -5,6 +5,8 @@ import com.org.llm.dto.QueryResponse;
 import com.org.llm.dto.SqlGeneration;
 import com.org.llm.exception.SqlGenerationException;
 import com.org.llm.exception.UnanswerableQuestionException;
+import com.org.llm.guard.PromptInjectionGuard;
+import com.org.llm.guard.SqlGuard;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -27,6 +29,7 @@ public class TextToSqlService {
     private final ChatClient chatClient;
     private final SchemaService schemaService;
     private final SqlGuard sqlGuard;
+    private final PromptInjectionGuard promptInjectionGuard;
     private final QueryExecutionService queryExecutionService;
     private final Text2SqlProperties properties;
 
@@ -38,6 +41,7 @@ public class TextToSqlService {
      * @return a validated SQL generation result
      */
     public SqlGeneration generateSql(String question) {
+        promptInjectionGuard.screenRequest(question);
         SqlGeneration generation;
         try {
             generation = chatClient.prompt()
@@ -57,6 +61,7 @@ public class TextToSqlService {
             throw new UnanswerableQuestionException(generation.explanation());
         }
         String cleanedSql = sqlGuard.validate(generation.sql());
+        promptInjectionGuard.screenResponse(generation.explanation());
         return new SqlGeneration(true, cleanedSql, generation.explanation());
     }
 

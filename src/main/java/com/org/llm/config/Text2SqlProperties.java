@@ -7,5 +7,9 @@ public record Text2SqlProperties(
         String schemaOwner,
         int defaultMaxRows,
         int hardMaxRows,
-        int queryTimeoutSeconds) {
+        int queryTimeoutSeconds,
+        String selectAiProfile,
+        String selectAiProvider,
+        String selectAiModel,
+        String selectAiProviderApiKey) {
 }

@@ -42,6 +42,18 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * @param e       the prompt-injection detection failure
+     * @param request the failing request, used to populate the error path
+     * @return a 422 response describing which guard rejected the text
+     */
+    @ExceptionHandler(PromptInjectionException.class)
+    public ResponseEntity<ErrorResponse> handlePromptInjection(PromptInjectionException e,
+                                                               HttpServletRequest request) {
+        log.warn("Rejected by PromptInjectionGuard: {}", e.getMessage());
+        return error(HttpStatus.UNPROCESSABLE_ENTITY, "Prompt injection detected", e.getMessage(), request);
+    }
+
+    /**
      * @param e       the unanswerable-question failure
      * @param request the failing request, used to populate the error path
      * @return a 422 response explaining why the schema cannot answer the question

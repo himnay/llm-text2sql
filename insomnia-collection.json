@@ -59,7 +59,10 @@
       "method": "POST",
       "url": "{{ _.base_url }}/api/v1/query",
       "headers": [
-        { "name": "Content-Type", "value": "application/json" }
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
       ],
       "body": {
         "mimeType": "application/json",
@@ -76,7 +79,10 @@
       "method": "POST",
       "url": "{{ _.base_url }}/api/v1/sql/generate",
       "headers": [
-        { "name": "Content-Type", "value": "application/json" }
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
       ],
       "body": {
         "mimeType": "application/json",
@@ -89,11 +95,14 @@
       "_type": "request",
       "parentId": "fld_query",
       "name": "Ask question (validation error sample)",
-      "description": "Blank question — demonstrates the 400 validation error shape.",
+      "description": "Blank question \u2014 demonstrates the 400 validation error shape.",
       "method": "POST",
       "url": "{{ _.base_url }}/api/v1/query",
       "headers": [
-        { "name": "Content-Type", "value": "application/json" }
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
       ],
       "body": {
         "mimeType": "application/json",
@@ -146,6 +155,46 @@
       "headers": [],
       "body": {},
       "metaSortKey": 200
+    },
+    {
+      "_id": "req_select_ai_query",
+      "_type": "request",
+      "parentId": "fld_query",
+      "name": "Select AI query (native Oracle DBMS_CLOUD_AI)",
+      "description": "Sends the question straight to Oracle Select AI \u2014 the database calls its own configured LLM provider, generates SQL, executes it, and returns rows. Requires an AI profile (app.text2sql.select-ai-profile / TEXT2SQL_SELECT_AI_PROFILE) already created in the DB via DBMS_CLOUD_AI.CREATE_PROFILE.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/select-ai/query",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"question\": \"What are the top 5 customers by total order amount in the last 90 days?\",\n\t\"maxRows\": 100\n}"
+      },
+      "metaSortKey": 150
+    },
+    {
+      "_id": "req_select_ai_setup",
+      "_type": "request",
+      "parentId": "fld_query",
+      "name": "Select AI setup (bootstrap credential + profile)",
+      "description": "One-time idempotent bootstrap of DBMS_CLOUD_AI credential + profile. Reads SELECT_AI_PROVIDER_API_KEY server-side (never send the key in this request) \u2014 requires ACL + package grants already done by a DB admin, see README.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/api/v1/select-ai/setup",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"provider\": \"openai\",\n\t\"model\": \"gpt-4.1-mini\"\n}"
+      },
+      "metaSortKey": 160
     }
   ]
 }

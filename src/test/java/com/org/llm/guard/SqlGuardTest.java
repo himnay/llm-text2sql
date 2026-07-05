@@ -1,4 +1,4 @@
-package com.org.llm.service;
+package com.org.llm.guard;
 
 import com.org.llm.exception.SqlValidationException;
 import org.junit.jupiter.api.DisplayName;
