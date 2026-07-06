@@ -19,22 +19,37 @@ POST /api/v1/query
 
 Database schema is versioned with **Flyway** (`src/main/resources/db/migration`) — runs on app startup over its own writable connection; the query pool stays read-only. `V1__demo_schema.sql` / `V2__demo_data.sql` ship a demo shop schema; replace with your own migrations.
 
+### How the LLM figures out joins the user never mentioned
+
+The user's question doesn't need to name any table — the domain model comes entirely from the schema snapshot `SchemaService` injects into the prompt, not from the question text:
+
+- `ALL_TABLES` / `ALL_TAB_COLUMNS` → every table, column, type, and comment
+- `ALL_CONSTRAINTS` (type `P`) → primary keys
+- `ALL_CONSTRAINTS` (type `R`) → foreign keys, rendered per table as `-- col references OTHER_TABLE(other_col)`
+
+The full snapshot (every table in the schema, not just ones the question hints at) goes into the system prompt as-is. At generation time the LLM does two things itself, unassisted by code:
+
+1. Maps nouns in the question to tables/columns by matching names and comments (semantic — the model's job).
+2. Walks the `-- references` lines in the snapshot to find the join path between the tables it picked, using the declared FK column/direction.
+
+So multi-table join capability rides entirely on schema-snapshot completeness — specifically, on FKs being declared as real constraints. A relationship that only exists at the application level (no DB-level FK) gives the model no signal, and it will likely get the join wrong or omit it.
+
 ## Configuration
 
-| Env var                      | Default                                       | Purpose                                                                                                                                                                                                 |
-|------------------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LLM_PROVIDER`               | `ollama`                                      | `ollama` (local) or `anthropic`                                                                                                                                                                         |
-| `OLLAMA_BASE_URL`            | `http://localhost:11434`                      | Ollama server                                                                                                                                                                                           |
-| `OLLAMA_MODEL`               | `qwen2.5-coder:7b`                            | Local model (good SQL model at 7B)                                                                                                                                                                      |
-| `ANTHROPIC_API_KEY`          | —                                             | Required only when `LLM_PROVIDER=anthropic`                                                                                                                                                             |
-| `ORACLE_URL`                 | `jdbc:oracle:thin:@//localhost:1521/FREEPDB1` | JDBC URL                                                                                                                                                                                                |
-| `ORACLE_USERNAME`            | `text2sql`                                    | DB user                                                                                                                                                                                                 |
-| `ORACLE_PASSWORD`            | `text2sql`                                | DB password — matches the `docker-compose.yaml` default; override both together                                                                                                                         |
-| `TEXT2SQL_SCHEMA_OWNER`      | `ORACLE_USERNAME`                             | Schema to introspect and query                                                                                                                                                                          |
-| `TEXT2SQL_SELECT_AI_PROFILE` | `TEXT2SQL_DEMO`                               | Name of the `DBMS_CLOUD_AI` profile activated for `/api/v1/select-ai/query` — see [Native Oracle Select AI passthrough](#native-oracle-select-ai-passthrough) below |
-| `SELECT_AI_PROVIDER` | `openai` | Provider used by `/api/v1/select-ai/setup` (`openai`, `cohere`, `gemini`, `oci`) |
-| `SELECT_AI_MODEL` | `gpt-4.1-mini` | Model name passed to `DBMS_CLOUD_AI.CREATE_PROFILE` by `/api/v1/select-ai/setup` |
-| `SELECT_AI_PROVIDER_API_KEY` | — | Provider API key used by `/api/v1/select-ai/setup`; never accepted in the request body, only this env var |
+| Env var                       | Default                                        | Purpose                                                                                                                                                                                                  |
+|-------------------------------|------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LLM_PROVIDER`                | `ollama`                                       | `ollama` (local) or `anthropic`                                                                                                                                                                          |
+| `OLLAMA_BASE_URL`             | `http://localhost:11434`                       | Ollama server                                                                                                                                                                                            |
+| `OLLAMA_MODEL`                | `qwen2.5-coder:7b`                             | Local model (good SQL model at 7B)                                                                                                                                                                       |
+| `ANTHROPIC_API_KEY`           | —                                              | Required only when `LLM_PROVIDER=anthropic`                                                                                                                                                              |
+| `ORACLE_URL`                  | `jdbc:oracle:thin:@//localhost:1521/FREEPDB1`  | JDBC URL                                                                                                                                                                                                 |
+| `ORACLE_USERNAME`             | `text2sql`                                     | DB user                                                                                                                                                                                                  |
+| `ORACLE_PASSWORD`             | `text2sql`                                     | DB password — matches the `docker-compose.yaml` default; override both together                                                                                                                          |
+| `TEXT2SQL_SCHEMA_OWNER`       | `ORACLE_USERNAME`                              | Schema to introspect and query                                                                                                                                                                           |
+| `TEXT2SQL_SELECT_AI_PROFILE`  | `TEXT2SQL_DEMO`                                | Name of the `DBMS_CLOUD_AI` profile activated for `/api/v1/select-ai/query` — see [Native Oracle Select AI passthrough](#native-oracle-select-ai-passthrough) below                                      |
+| `SELECT_AI_PROVIDER`          | `openai`                                       | Provider used by `/api/v1/select-ai/setup` (`openai`, `cohere`, `gemini`, `oci`)                                                                                                                         |
+| `SELECT_AI_MODEL`             | `gpt-4.1-mini`                                 | Model name passed to `DBMS_CLOUD_AI.CREATE_PROFILE` by `/api/v1/select-ai/setup`                                                                                                                         |
+| `SELECT_AI_PROVIDER_API_KEY`  | —                                              | Provider API key used by `/api/v1/select-ai/setup`; never accepted in the request body, only this env var                                                                                                |
 
 Tunables under `app.text2sql` in `application.yaml`: `default-max-rows` (100), `hard-max-rows` (1000), `query-timeout-seconds` (30).
 
@@ -56,15 +71,15 @@ mvn spring-boot:run         # app connects to localhost:1521 and to the host's l
 
 ## API
 
-| Method | Path                      | Description                                                                                                                          |
-|--------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| POST   | `/api/v1/query`           | Generate SQL, execute, return rows (app-level Spring AI pipeline)                                                                    |
-| POST   | `/api/v1/sql/generate`    | Generate SQL only (dry run)                                                                                                          |
-| POST   | `/api/v1/select-ai/query` | Send the question straight to Oracle's native Select AI — the **database** generates and executes the SQL, this app just relays rows |
-| POST   | `/api/v1/select-ai/setup` | One-time (idempotent) bootstrap of the `DBMS_CLOUD_AI` credential + profile, using `SELECT_AI_PROVIDER_API_KEY` |
-| GET    | `/api/v1/schema`          | Current schema snapshot                                                                                                              |
-| POST   | `/api/v1/schema/refresh`  | Rebuild snapshot after migrations                                                                                                    |
-| GET    | `/actuator/health`        | Health probe                                                                                                                         |
+| Method | Path                      | Description                                                                                                                           |
+|--------|---------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| POST   | `/api/v1/query`           | Generate SQL, execute, return rows (app-level Spring AI pipeline)                                                                     |
+| POST   | `/api/v1/sql/generate`    | Generate SQL only (dry run)                                                                                                           |
+| POST   | `/api/v1/select-ai/query` | Send the question straight to Oracle's native Select AI — the **database** generates and executes the SQL, this app just relays rows  |
+| POST   | `/api/v1/select-ai/setup` | One-time (idempotent) bootstrap of the `DBMS_CLOUD_AI` credential + profile, using `SELECT_AI_PROVIDER_API_KEY`                       |
+| GET    | `/api/v1/schema`          | Current schema snapshot                                                                                                               |
+| POST   | `/api/v1/schema/refresh`  | Rebuild snapshot after migrations                                                                                                     |
+| GET    | `/actuator/health`        | Health probe                                                                                                                          |
 
 Example:
 
@@ -240,6 +255,40 @@ Import `insomnia-collection.json` (Application menu → Import). Set `base_url` 
 - DB connections used for generated SQL are read-only (Hikari `read-only: true`) **and** `SqlGuard` rejects anything but a single `SELECT`/`WITH` statement — defense in depth against prompt injection through question text. Flyway migrations use a separate writable connection at startup only.
 - In production, grant the runtime DB user `SELECT` only and run Flyway with a separate privileged user (`spring.flyway.user`).
 - Row cap (`hard-max-rows`) and query timeout bound resource usage.
+
+### `SqlGuard` checks
+
+Validates LLM-generated SQL before execution — fail-fast with clear message instead of an ORA error. DB connection is separately read-only; this is defense in depth, not the only line of defense.
+
+| Check | Rejects |
+|---|---|
+| Strip comments (`--...`, `/*...*/`), then reject any remaining `;` | Multiple SQL statements (statement stacking) |
+| Must start with `SELECT` or `WITH` (after stripping trailing `;`) | Anything that isn't a read query |
+| Forbidden-keyword scan: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `UPSERT` | DML |
+| Forbidden-keyword scan: `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME`, `PURGE` | DDL |
+| Forbidden-keyword scan: `GRANT`, `REVOKE`, `AUDIT`, `COMMENT` | Privilege/metadata changes |
+| Forbidden-keyword scan: `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `LOCK` | Transaction control |
+| Forbidden-keyword scan: `EXECUTE`, `EXEC`, `CALL`, `BEGIN`, `DECLARE` | PL/SQL blocks / stored proc calls |
+| Forbidden-keyword scan: `DBMS_SQL`, `DBMS_SCHEDULER`, `UTL_FILE`, `UTL_HTTP`, `UTL_TCP`, `UTL_SMTP` | Dangerous built-in packages (dynamic SQL, job scheduling, file/network I/O) |
+
+Empty/blank generated SQL is rejected outright. On success, returns the cleaned statement (comments stripped, trailing `;` removed) for execution.
+
+### `PromptInjectionGuard` patterns
+
+Heuristic denylist scanned against both the caller's question (`screenRequest`) and the LLM's generated explanation (`screenResponse`, guards against indirect injection). Not authoritative — `SqlGuard` is what actually gates SQL execution.
+
+| Pattern (regex)                                             | Detects                                                                   |
+|-------------------------------------------------------------|---------------------------------------------------------------------------|
+| `ignore\s+(all\s+)?(previous\|prior\|above)\s+instructions` | "ignore previous/prior/above instructions" — classic instruction override |
+| `disregard\s+(the\s+)?(system\|previous)\s+prompt`          | "disregard the system/previous prompt" — override via different phrasing  |
+| `you\s+are\s+now\s+`                                        | Role-hijack attempt, e.g. "you are now a ..."                             |
+| `new\s+instructions\s*:`                                    | Injected instruction block labeled "New instructions:"                    |
+| `reveal\s+(your\|the)\s+(system\s+)?prompt`                 | System-prompt exfiltration attempt                                        |
+| `print\s+(your\|the)\s+(system\s+)?instructions`            | Instruction exfiltration via "print your/the instructions"                |
+| `</?system>`                                                | Fake system-role tags trying to inject a new turn                         |
+| `\bact\s+as\s+(an?\s+)?(dan\|jailbreak)\b`                  | Known jailbreak personas ("DAN", "jailbreak")                             |
+
+All matches case-insensitive. Text over `MAX_LENGTH` (4000 chars) is rejected outright regardless of pattern match.
 
 ---
 
