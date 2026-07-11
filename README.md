@@ -1,5 +1,7 @@
 # llm-text2sql
 
+<img src="image/spring-logo.png" alt="logo" width="80"/>
+
 ![db-oracle-ai.png](images/db-oracle-ai.png)
 
 Text-to-SQL REST service: Spring Boot 4 + Spring AI 2 + Oracle Database 26ai. LLM provider is switchable — local **Ollama** (default, no API key) or **Anthropic Claude**.
