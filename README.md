@@ -8,6 +8,17 @@ Text-to-SQL REST service: Spring Boot 4 + Spring AI 2 + Oracle Database 26ai. LL
 
 Natural-language question → grounded Oracle SQL (schema snapshot injected into the prompt) → validated (read-only guard) → executed with row cap and timeout → JSON result.
 
+## Table of Contents
+
+1. 🏗️ [Architecture](#architecture)
+2. ⚙️ [Configuration](#configuration)
+3. 🚀 [Run](#run)
+4. 🌐 [API](#api)
+5. 🤖 [Native Oracle Select AI passthrough](#native-oracle-select-ai-passthrough)
+6. 🤝 [Insomnia](#insomnia)
+7. 🔐 [Security notes](#security-notes)
+8. 💡 [Deep Dive: Oracle Database 26ai — the AI-Native RDBMS](#deep-dive-oracle-database-26ai--the-ai-native-rdbms)
+
 ## Architecture
 
 ```
