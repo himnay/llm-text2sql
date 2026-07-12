@@ -300,18 +300,18 @@ All matches case-insensitive. Text over `MAX_LENGTH` (4000 chars) is rejected ou
 
 ## Table of contents
 
-1. [Why "AI Database" is a real category, not a marketing label](#1-why-ai-database-is-a-real-category-not-a-marketing-label)
-2. [The core primitive: AI Vector Search](#2-the-core-primitive-ai-vector-search)
-3. [Select AI: Oracle's native text-to-SQL](#3-select-ai-oracles-native-text-to-sql)
-4. [Select AI RAG: retrieval over unstructured content](#4-select-ai-rag-retrieval-over-unstructured-content)
-5. [This repo's approach vs. Select AI — and when to pick each](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each)
-6. [JSON Relational Duality: one row, two data models](#6-json-relational-duality-one-row-two-data-models)
-7. [In-database machine learning (OML)](#7-in-database-machine-learning-oml)
-8. [Multi-model in one engine: graph, spatial, XML, text](#8-multi-model-in-one-engine-graph-spatial-xml-text)
-9. [Autonomous operations: self-tuning, self-patching, self-securing](#9-autonomous-operations-self-tuning-self-patching-self-securing)
-10. [How this compares to PostgreSQL, MySQL, and dedicated vector databases](#10-how-this-compares-to-postgresql-mysql-and-dedicated-vector-databases)
-11. [Other use cases worth knowing about](#11-other-use-cases-worth-knowing-about)
-12. [Glossary](#12-glossary)
+1. 🗄️ [Why "AI Database" is a real category, not a marketing label](#1-why-ai-database-is-a-real-category-not-a-marketing-label)
+2. 🤖 [The core primitive: AI Vector Search](#2-the-core-primitive-ai-vector-search)
+3. 🗄️ [Select AI: Oracle's native text-to-SQL](#3-select-ai-oracles-native-text-to-sql)
+4. 🤖 [Select AI RAG: retrieval over unstructured content](#4-select-ai-rag-retrieval-over-unstructured-content)
+5. 🤖 [This repo's approach vs. Select AI — and when to pick each](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each)
+6. 🤖 [JSON Relational Duality: one row, two data models](#6-json-relational-duality-one-row-two-data-models)
+7. 🗄️ [In-database machine learning (OML)](#7-in-database-machine-learning-oml)
+8. 🤖 [Multi-model in one engine: graph, spatial, XML, text](#8-multi-model-in-one-engine-graph-spatial-xml-text)
+9. ⚡ [Autonomous operations: self-tuning, self-patching, self-securing](#9-autonomous-operations-self-tuning-self-patching-self-securing)
+10. 🗄️ [How this compares to PostgreSQL, MySQL, and dedicated vector databases](#10-how-this-compares-to-postgresql-mysql-and-dedicated-vector-databases)
+11. 💡 [Other use cases worth knowing about](#11-other-use-cases-worth-knowing-about)
+12. 🔹 [Glossary](#12-glossary)
 
 ---
 
