@@ -19,7 +19,8 @@ Natural-language question → grounded Oracle SQL (schema snapshot injected into
 7. 🔐 [Security notes](#security-notes)
 8. 💡 [Deep Dive: Oracle Database 26ai — the AI-Native RDBMS](#deep-dive-oracle-database-26ai--the-ai-native-rdbms)
 
-## Architecture
+<a id="architecture"></a>
+## 1. 🏗️ Architecture
 
 ```
 POST /api/v1/query
@@ -47,7 +48,8 @@ The full snapshot (every table in the schema, not just ones the question hints a
 
 So multi-table join capability rides entirely on schema-snapshot completeness — specifically, on FKs being declared as real constraints. A relationship that only exists at the application level (no DB-level FK) gives the model no signal, and it will likely get the join wrong or omit it.
 
-## Configuration
+<a id="configuration"></a>
+## 2. ⚙️ Configuration
 
 | Env var                       | Default                                        | Purpose                                                                                                                                                                                                  |
 |-------------------------------|------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -66,7 +68,8 @@ So multi-table join capability rides entirely on schema-snapshot completeness �
 
 Tunables under `app.text2sql` in `application.yaml`: `default-max-rows` (100), `hard-max-rows` (1000), `query-timeout-seconds` (30).
 
-## Run
+<a id="run"></a>
+## 3. 🚀 Run
 
 Docker Compose starts only Oracle Free 26ai. Ollama is expected to already be running on the host (e.g. as a system service — see below) with `OLLAMA_MODEL` already pulled; run the app itself locally:
 
@@ -82,7 +85,8 @@ mvn spring-boot:run         # app connects to localhost:1521 and to the host's l
 - `docker-compose.yaml` also ships an `ollama` service (containerized, for environments with no host Ollama) — `docker compose up` (no service name) starts both, but the container will fail to bind `11434` if a host Ollama is already listening on it. Pick one: host Ollama (default assumption here) or `docker compose up ollama` (stop the host service first).
 - NVIDIA GPU for the containerized Ollama: uncomment the `deploy` block on the `ollama` service in `docker-compose.yaml`.
 
-## API
+<a id="api"></a>
+## 4. 🌐 API
 
 | Method | Path                      | Description                                                                                                                           |
 |--------|---------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
@@ -112,7 +116,8 @@ curl -s localhost:8080/api/v1/select-ai/query \
   -d '{"question": "Top 5 customers by total order amount", "maxRows": 50}'
 ```
 
-## Native Oracle Select AI passthrough
+<a id="native-oracle-select-ai-passthrough"></a>
+## 5. 🤖 Native Oracle Select AI passthrough
 
 `POST /api/v1/select-ai/query` (`SelectAiService`) skips this app's own Spring AI pipeline entirely. It sends the question straight to Oracle's built-in **Select AI** feature (`DBMS_CLOUD_AI`): the *database* calls its own configured LLM provider, generates the SQL, executes it, and hands back rows — this app only activates the AI profile and relays the `ResultSet`. No `ChatClient`, no `SchemaService` snapshot, no `SqlGuard`. This is the concrete, running implementation of the comparison discussed in the [Deep Dive](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each) below; the setup here follows the walkthrough in the [LinkedIn article](#reference) linked at the end of this file.
 
@@ -259,11 +264,13 @@ Per Oracle's documented behavior (and confirmed in the article above): only sche
 
 This endpoint intentionally has none of `SqlGuard`'s statement-shape checks (no forbidden-keyword scan, no single-statement enforcement beyond a `;` rejection to stop naive multi-statement injection through the concatenated question text). Trust boundary is Oracle's own object privileges on the credentialed user, exactly as described in [§5](#5-this-repos-approach-vs-select-ai--and-when-to-pick-each) — grant that user `SELECT` only in production, the same recommendation as the [Security notes](#security-notes) above.
 
-## Insomnia
+<a id="insomnia"></a>
+## 6. 🤝 Insomnia
 
 Import `insomnia-collection.json` (Application menu → Import). Set `base_url` in the environment if not `http://localhost:8080`.
 
-## Security notes
+<a id="security-notes"></a>
+## 7. 🔐 Security notes
 
 - DB connections used for generated SQL are read-only (Hikari `read-only: true`) **and** `SqlGuard` rejects anything but a single `SELECT`/`WITH` statement — defense in depth against prompt injection through question text. Flyway migrations use a separate writable connection at startup only.
 - In production, grant the runtime DB user `SELECT` only and run Flyway with a separate privileged user (`spring.flyway.user`).
@@ -305,7 +312,8 @@ All matches case-insensitive. Text over `MAX_LENGTH` (4000 chars) is rejected ou
 
 ---
 
-# Deep Dive: Oracle Database 26ai — the AI-Native RDBMS
+<a id="deep-dive-oracle-database-26ai--the-ai-native-rdbms"></a>
+# 8. 💡 Deep Dive: Oracle Database 26ai — the AI-Native RDBMS
 
 > This section is a standalone technical primer on what "AI Database" means for Oracle 23ai/26ai, how its native text-to-SQL feature (**Select AI**) actually works under the hood, how it differs from the app-level pipeline in this repo, and what else the platform is good for beyond chat-to-query. It assumes relational database familiarity but no prior exposure to Oracle's AI feature set.
 
