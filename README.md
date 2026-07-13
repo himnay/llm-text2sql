@@ -334,7 +334,7 @@ All matches case-insensitive. Text over `MAX_LENGTH` (4000 chars) is rejected ou
 
 ---
 
-## 1. Why "AI Database" is a real category, not a marketing label
+## 1. 🗄️ Why "AI Database" is a real category, not a marketing label
 
 For three decades, "add AI to your app" meant: run your OLTP database for transactional truth, stand up a separate vector database (Pinecone, Weaviate, pgvector-on-Postgres) for embeddings, wire in an ETL pipeline to keep the two in sync, and hope the sync lag never causes a stale answer. That's the shape of almost every RAG (retrieval-augmented generation) architecture built in 2023–2024: **two systems of record, one consistency problem.**
 
@@ -351,7 +351,7 @@ Concretely, "AI Database" bundles four previously-separate concerns into one pro
 
 None of this is exotic. It's the same relational engine you already know (same `SELECT`, same `JOIN`, same ACID transactions, same `SQL*Plus`/JDBC access this repo already uses), with new **data types**, new **PL/SQL packages**, and new **index types** layered on top. If you can write a `SELECT`, you can already query a vector index — you just call `VECTOR_DISTANCE(embedding_col, :query_vector, COSINE)` in the `ORDER BY` clause instead of a normal comparison.
 
-## 2. The core primitive: AI Vector Search
+## 2. 🤖 The core primitive: AI Vector Search
 
 Everything else in this document builds on one feature: a native `VECTOR` data type and the index structures that make similarity search over it fast at scale.
 
@@ -384,7 +384,7 @@ A few things worth calling out for anyone coming from `pgvector` or a dedicated 
 
 This single primitive is what everything below is built on: Select AI's RAG mode uses it to retrieve context; JSON Duality Views can carry embeddings alongside document data; and hybrid search (vector + full-text + relational filters in one query) is possible precisely because there's no second system to federate across.
 
-## 3. Select AI: Oracle's native text-to-SQL
+## 3. 🗄️ Select AI: Oracle's native text-to-SQL
 
 This is the feature most directly comparable to what `TextToSqlService` in this repo does by hand — except Oracle ships it as a built-in PL/SQL package (`DBMS_CLOUD_AI`) rather than application code you write and own.
 
@@ -466,7 +466,7 @@ SELECT AI narrate How many orders were placed each month this year?
 - **No structured JSON contract.** `SqlGeneration` (`{answerable, sql, explanation}`) is a typed response shape a Java caller can branch on. Select AI's `narrate`/`chat` actions return prose; `runsql` returns a normal result set — there's no built-in "tell me if this was even answerable" boolean the way this repo's system prompt enforces.
 - **Not natively containerized/portable.** Select AI's behavior lives in the database; this repo's pipeline is a Spring Boot service you can run against *any* Oracle instance (or, with the Ollama provider, entirely offline, which is exactly why the docker-compose stack in this repo defaults to local Ollama with no external API key).
 
-## 4. Select AI RAG: retrieval over unstructured content
+## 4. 🤖 Select AI RAG: retrieval over unstructured content
 
 Distinct from schema-grounded text-to-SQL, **Select AI RAG** targets the classic "answer from a pile of PDFs/docs" problem — but keeps the whole pipeline inside the database:
 
@@ -476,7 +476,7 @@ Distinct from schema-grounded text-to-SQL, **Select AI RAG** targets the classic
 
 This is a genuinely different use case from Text2SQL — it answers "what does our onboarding policy say about refunds?" rather than "how many refunds did we process last quarter?" — but it shares the same underlying `VECTOR` infrastructure from §2, and the same `DBMS_CLOUD_AI` profile/credential model from §3. If this repo ever needed to answer *both* structured ("top 5 customers") and unstructured ("what's our return policy") questions from one endpoint, Select AI RAG is the natural place Oracle expects that to live — a single profile, a single `SELECT AI` call, routing internally between SQL generation and document retrieval based on the question.
 
-## 5. This repo's approach vs. Select AI — and when to pick each
+## 5. 🤖 This repo's approach vs. Select AI — and when to pick each
 
 |                                          | This repo (app-level Spring AI pipeline)                                                                                                                                                        | Select AI (in-database)                                                                                                                                 |
 |------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -492,7 +492,7 @@ This is a genuinely different use case from Text2SQL — it answers "what does o
 
 **In short:** this repo re-implements, in application code, roughly the `runsql`/`showsql` slice of what Select AI gives you for free — but adds the guardrail and contract layer Select AI intentionally leaves to the caller, and adds the ability to run entirely against a local model with zero external network dependency. Neither is strictly better; they trade off "batteries included but Oracle-and-hosted-LLM-only" against "more code to own, but auditable, portable, and offline-capable."
 
-## 6. JSON Relational Duality: one row, two data models
+## 6. 🤖 JSON Relational Duality: one row, two data models
 
 A second major 23ai/26ai feature, orthogonal to the AI/LLM story but part of the same "AI Database" release wave: **Duality Views** let the same underlying relational rows be read and written as either normalized relational tables *or* as nested JSON documents — fully consistent, no ETL, no dual-write.
 
@@ -521,7 +521,7 @@ A client can now `GET`/`PUT` a customer as a single nested JSON document (the sh
 
 Why it matters for a Text2SQL context specifically: the LLM in this repo generates relational `SELECT` statements against normalized tables (`customers`, `orders`, `order_items`) because that's the schema `SchemaService` describes to it. If the same data were *only* stored as MongoDB-style documents, there'd be no clean relational schema to ground the prompt with — Duality Views mean you can have both without picking one storage model up front.
 
-## 7. In-database machine learning (OML)
+## 7. 🗄️ In-database machine learning (OML)
 
 **Oracle Machine Learning (OML)** predates the "23ai" branding but is squarely part of the same "don't move the data out to do AI" philosophy: classification, regression, clustering, anomaly detection, and time-series forecasting models trained and scored **via SQL**, directly against tables, with no data export to a Python/Spark cluster:
 
@@ -545,7 +545,7 @@ FROM   customer_features_new;
 
 Relevance to this repo: nothing here is used directly, but it's the natural next step for a Text2SQL product — "which customers are likely to churn" is a question this repo's LLM *can't* answer today (there's no `churn_risk` column, and the guardrails intentionally forbid the kind of write/DDL access needed to build one on the fly), but it's exactly the kind of question OML is built to make answerable with a `PREDICTION()` call inside an ordinary `SELECT`, sitting right next to the relational joins the LLM already generates.
 
-## 8. Multi-model in one engine: graph, spatial, XML, text
+## 8. 🤖 Multi-model in one engine: graph, spatial, XML, text
 
 Beyond vectors and JSON, the same Oracle engine natively supports:
 
@@ -556,7 +556,7 @@ Beyond vectors and JSON, the same Oracle engine natively supports:
 
 The pattern repeats: rather than "pick a specialized database per data shape and federate across them at the application layer," Oracle's pitch is one ACID-compliant engine, one security model, one backup/DR story, covering relational + document + vector + graph + spatial + full-text simultaneously.
 
-## 9. Autonomous operations: self-tuning, self-patching, self-securing
+## 9. ⚡ Autonomous operations: self-tuning, self-patching, self-securing
 
 Orthogonal to the AI *data* features above, Oracle's **Autonomous Database** deployment model (which the `26ai` label commonly refers to when discussing Oracle's cloud offering, as distinct from the on-premises/container "Free" edition this repo's `docker-compose.yaml` uses) applies ML internally to operate the database itself:
 
@@ -567,7 +567,7 @@ Orthogonal to the AI *data* features above, Oracle's **Autonomous Database** dep
 
 This layer doesn't touch the Text2SQL pipeline directly, but it's worth knowing that "26ai" spans two distinct meanings depending on context: the **feature set** (vectors, Select AI, Duality Views — available in the free/container edition this repo runs against) and the **autonomous operations model** (available specifically on Oracle's managed cloud offering).
 
-## 10. How this compares to PostgreSQL, MySQL, and dedicated vector databases
+## 10. 🗄️ How this compares to PostgreSQL, MySQL, and dedicated vector databases
 
 | Capability                                                               | Oracle 23ai/26ai               | PostgreSQL + pgvector                                                     | MySQL 9+                                 | Dedicated vector DB (Pinecone/Weaviate/Milvus)   |
 |--------------------------------------------------------------------------|--------------------------------|---------------------------------------------------------------------------|------------------------------------------|--------------------------------------------------|
@@ -582,7 +582,7 @@ This layer doesn't touch the Text2SQL pipeline directly, but it's worth knowing 
 
 **Reading this table honestly:** Postgres with `pgvector` covers the §2 vector-search primitive well and is free — if all you need is "add semantic search to Postgres," that's usually the pragmatic choice, and it's exactly the architecture this repo's `LLM_PROVIDER=ollama` path is compatible with if you ever swap the JDBC driver. Oracle's differentiation is specifically in **bundling the orchestration layer** (Select AI, Select AI RAG, Duality Views, OML) *inside the engine* rather than requiring you to write and operate that orchestration yourself — which is precisely the trade this repo makes the opposite way: it builds that orchestration in Spring AI/Java instead of relying on `DBMS_CLOUD_AI`, in exchange for the guardrail/portability/offline benefits in §5.
 
-## 11. Other use cases worth knowing about
+## 11. 💡 Other use cases worth knowing about
 
 Beyond Text2SQL, the same "AI Database" surface area is being used in production for:
 
@@ -595,7 +595,7 @@ Beyond Text2SQL, the same "AI Database" surface area is being used in production
 - **Master data unification** — Duality Views (§6) letting a document-oriented microservice and a relational reporting pipeline both operate on one physical copy of customer/product data, instead of syncing two databases.
 - **Legacy SQL comprehension** — the `explainsql` action (§3) turning inherited, undocumented queries into a plain-English explanation, useful for onboarding engineers onto an unfamiliar codebase's data layer.
 
-## 12. Glossary
+## 12. 🔹 Glossary
 
 | Term                                             | Meaning                                                                                                                                                                                    |
 |--------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
