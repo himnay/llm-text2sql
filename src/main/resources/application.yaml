@@ -1,8 +1,5 @@
 server:
   port: 8080
-  error:
-    include-message: always
-
 spring:
   application:
     name: llm-text2sql
@@ -38,6 +35,9 @@ spring:
         model: claude-opus-4-8
         max-tokens: 2048
 
+  web:
+    error:
+      include-message: always
 management:
   endpoints:
     web:
@@ -47,7 +47,7 @@ management:
     health:
       show-details: when-authorized
     info:
-      enabled: true
+      access: read-only
   info:
     git:
       mode: full
