@@ -31,6 +31,17 @@ POST /api/v1/query
         └─ QueryExecutionService  read-only pool, maxRows cap, query timeout
 ```
 
+```mermaid
+flowchart LR
+    u[Client] -->|"POST /api/v1/query<br/>natural language"| svc[TextToSqlService]
+    svc --> sch["SchemaService<br/>(schema snapshot)"]
+    sch -->|"schema + question<br/>in prompt"| llm["ChatClient<br/>Ollama / Anthropic"]
+    llm -->|"{answerable, sql, explanation}"| guard["SqlGuard<br/>SELECT-only check"]
+    guard --> exec["QueryExecutionService<br/>read-only, row cap, timeout"]
+    exec --> db[("Oracle 26ai")]
+    db -->|rows| u
+```
+
 Database schema is versioned with **Flyway** (`src/main/resources/db/migration`) — runs on app startup over its own writable connection; the query pool stays read-only. `V1__demo_schema.sql` / `V2__demo_data.sql` ship a demo shop schema; replace with your own migrations.
 
 ### How the LLM figures out joins the user never mentioned
