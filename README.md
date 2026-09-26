@@ -86,19 +86,28 @@ Tunables under `app.text2sql` in `application.yaml`: `default-max-rows` (100), `
 <a id="run"></a>
 ## <span style="color:hsl(171,80%,58%)">3. 🚀 Run</span>
 
+Prerequisites: JDK 25 and Docker. The parent POM `com.org.llm:super-pom` and the `learning-bom` it imports are not on Maven Central, so install both once from their own repositories:
+
+```sh
+(cd ~/projects/learning-bom && mvn -N install)
+(cd ~/projects/super-pom && mvn -N install)
+```
+
 Docker Compose starts only Oracle Free 26ai. Ollama is expected to already be running on the host (e.g. as a system service — see below) with `OLLAMA_MODEL` already pulled; run the app itself locally:
 
 ```sh
 docker compose up oracle   # starts oracle only, waits on healthcheck
-mvn spring-boot:run         # app connects to localhost:1521 and to the host's localhost:11434
+./mvnw spring-boot:run      # app connects to localhost:1521 and to the host's localhost:11434
 ```
+
+`./mvnw verify` runs the unit tests (`SqlGuard`, `PromptInjectionGuard`, the per-statement row cap, request validation). They need neither Oracle nor an LLM, and CI (`.github/workflows/ci.yml`) runs the same build on every push.
 
 <ul>
 
 - Oracle `localhost:1521/FREEPDB1`, cached in a volume across restarts (`docker compose down -v` resets, including the database).
 - Flyway creates and seeds the demo schema on first app start.
 - First `docker compose up oracle` is slow: Oracle initializes its data files.
-- To use Claude instead of the local model: `LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... mvn spring-boot:run`
+- To use Claude instead of the local model: `LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... ./mvnw spring-boot:run`
 - `docker-compose.yaml` also ships an `ollama` service (containerized, for environments with no host Ollama) — `docker compose up` (no service name) starts both, but the container will fail to bind `11434` if a host Ollama is already listening on it. Pick one: host Ollama (default assumption here) or `docker compose up ollama` (stop the host service first).
 - NVIDIA GPU for the containerized Ollama: uncomment the `deploy` block on the `ollama` service in `docker-compose.yaml`.
 
@@ -126,6 +135,8 @@ curl -s localhost:8080/api/v1/query \
 ```
 
 Error mapping: `400` invalid request, `422` SQL rejected / question unanswerable / execution error, `502` model failure.
+
+The optional `provider` and `model` overrides in the `/select-ai/setup` body end up inside the profile's JSON attributes, so they are restricted to letters, digits and `_-` (provider) or `._:/-` (model); anything else is a `400`.
 
 Same request shape against the native passthrough — the database, not this app, decides the SQL:
 
@@ -295,7 +306,7 @@ Import `insomnia-collection.json` (Application menu → Import). Set `base_url` 
 
 - DB connections used for generated SQL are read-only (Hikari `read-only: true`) **and** `SqlGuard` rejects anything but a single `SELECT`/`WITH` statement — defense in depth against prompt injection through question text. Flyway migrations use a separate writable connection at startup only.
 - In production, grant the runtime DB user `SELECT` only and run Flyway with a separate privileged user (`spring.flyway.user`).
-- Row cap (`hard-max-rows`) and query timeout bound resource usage.
+- Row cap (`hard-max-rows`) and query timeout bound resource usage. The cap is set on each statement, not on the shared `JdbcTemplate`, so concurrent requests can't overwrite each other's limit.
 
 </ul>
 
@@ -312,7 +323,7 @@ Validates LLM-generated SQL before execution — fail-fast with clear message in
 | Forbidden-keyword scan: `GRANT`, `REVOKE`, `AUDIT`, `COMMENT`                                       | Privilege/metadata changes                                                  |
 | Forbidden-keyword scan: `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `LOCK`                                   | Transaction control                                                         |
 | Forbidden-keyword scan: `EXECUTE`, `EXEC`, `CALL`, `BEGIN`, `DECLARE`                               | PL/SQL blocks / stored proc calls                                           |
-| Forbidden-keyword scan: `DBMS_SQL`, `DBMS_SCHEDULER`, `UTL_FILE`, `UTL_HTTP`, `UTL_TCP`, `UTL_SMTP` | Dangerous built-in packages (dynamic SQL, job scheduling, file/network I/O) |
+| Package scan: every `UTL_*`, every `DBMS_*` except `DBMS_LOB` / `DBMS_RANDOM`, and the URI types `HTTPURITYPE` / `DBURITYPE` / `XDBURITYPE` / `URIFACTORY` | Built-ins a plain `SELECT` can still call: network or file access that can exfiltrate data (`UTL_HTTP`, `UTL_INADDR`, `HTTPURITYPE`), dynamic SQL or jobs (`DBMS_SQL`, `DBMS_SCHEDULER`), session stalls (`DBMS_PIPE`, `DBMS_LOCK`) |
 
 Empty/blank generated SQL is rejected outright. On success, returns the cleaned statement (comments stripped, trailing `;` removed) for execution.
 
@@ -672,6 +683,7 @@ Beyond Text2SQL, the same "AI Database" surface area is being used in production
 
 *This section is written from general, publicly documented Oracle AI Database capabilities (Select AI, AI Vector Search, JSON Relational Duality, OML, Autonomous Database) as of the 23ai/26ai release family. Exact package names, action keywords, and SQL syntax shown are illustrative of the documented feature shape — verify against the specific Oracle Database 26ai release notes and `DBMS_CLOUD_AI` package reference for your target deployment before using in production, since AI-feature syntax has evolved across point releases.*
 
+<a id="reference"></a>
 ## <span style="color:hsl(336,80%,58%)">Reference</span>
 
 <ul>
