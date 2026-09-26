@@ -23,8 +23,18 @@ public class SqlGuard {
             "CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME", "PURGE",
             "GRANT", "REVOKE", "AUDIT", "COMMENT",
             "COMMIT", "ROLLBACK", "SAVEPOINT", "LOCK",
-            "EXECUTE", "EXEC", "CALL", "BEGIN", "DECLARE",
-            "DBMS_SQL", "DBMS_SCHEDULER", "UTL_FILE", "UTL_HTTP", "UTL_TCP", "UTL_SMTP");
+            "EXECUTE", "EXEC", "CALL", "BEGIN", "DECLARE");
+
+    /**
+     * Built-in packages stay callable from a plain SELECT: every UTL_* package reaches the
+     * network or file system (UTL_HTTP, UTL_INADDR, UTL_FILE, ...), and most DBMS_* packages
+     * run dynamic SQL or jobs, or have other side effects (DBMS_SQL, DBMS_SCHEDULER, DBMS_PIPE,
+     * DBMS_LDAP, DBMS_CLOUD, ...). These two are read-only helpers a query may reasonably use.
+     */
+    private static final Set<String> ALLOWED_PACKAGES = Set.of("DBMS_LOB", "DBMS_RANDOM");
+
+    /** URI types whose methods (e.g. HTTPURITYPE(url).GETCLOB()) fetch a URL from the database server. */
+    private static final Set<String> URI_TYPES = Set.of("HTTPURITYPE", "DBURITYPE", "XDBURITYPE", "URIFACTORY");
 
     /**
      * @return the cleaned statement (comments stripped, trailing semicolon removed)
@@ -56,7 +66,16 @@ public class SqlGuard {
             if (FORBIDDEN_KEYWORDS.contains(word)) {
                 throw new SqlValidationException("Forbidden keyword in generated SQL: " + word);
             }
+            if (isForbiddenPackage(word)) {
+                throw new SqlValidationException("Forbidden package in generated SQL: " + word);
+            }
         }
         return cleaned;
+    }
+
+    private static boolean isForbiddenPackage(String word) {
+        return word.startsWith("UTL_")
+                || word.startsWith("DBMS_") && !ALLOWED_PACKAGES.contains(word)
+                || URI_TYPES.contains(word);
     }
 }
