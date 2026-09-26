@@ -69,7 +69,7 @@ app:
     group-id: com.org.llm
     artifact-id: llm-text2sql
     project-version: 0.0.1-SNAPSHOT
-    spring-ai-version: 2.0.0
+    spring-ai-version: 2.0.1
     database: Oracle Database 26ai
     llm-provider: ${LLM_PROVIDER:ollama}
   text2sql:
