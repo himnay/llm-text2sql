@@ -2,10 +2,12 @@ package com.org.llm.service;
 
 import com.org.llm.config.Text2SqlProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.ColumnMapRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
+import java.sql.PreparedStatement;
 import java.util.List;
 import java.util.Map;
 
@@ -39,8 +41,13 @@ public class QueryExecutionService {
         int maxRows = requestedMaxRows != null
                 ? Math.min(requestedMaxRows, properties.hardMaxRows())
                 : properties.defaultMaxRows();
-        readOnlyTemplate.setMaxRows(maxRows);
         log.debug("Executing generated SQL (maxRows={}): {}", maxRows, sql);
-        return readOnlyTemplate.queryForList(sql);
+        // The cap goes on this statement, not on the shared JdbcTemplate: calling setMaxRows() on the
+        // singleton template would let concurrent requests overwrite each other's row cap.
+        return readOnlyTemplate.query(con -> {
+            PreparedStatement statement = con.prepareStatement(sql);
+            statement.setMaxRows(maxRows);
+            return statement;
+        }, new ColumnMapRowMapper());
     }
 }
