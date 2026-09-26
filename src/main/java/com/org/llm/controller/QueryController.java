@@ -46,7 +46,7 @@ public class QueryController {
      * Requires the ACL + package grants from README's setup section to already exist.
      */
     @PostMapping("/select-ai/setup")
-    public Map<String, String> selectAiSetup(@RequestBody(required = false) SelectAiSetupRequest request) {
+    public Map<String, String> selectAiSetup(@Valid @RequestBody(required = false) SelectAiSetupRequest request) {
         String provider = request != null ? request.provider() : null;
         String model = request != null ? request.model() : null;
         return Map.of("result", selectAiService.bootstrapProfile(provider, model));
