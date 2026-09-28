@@ -23,7 +23,7 @@ jobs:
           path: llm-text2sql
       - uses: actions/setup-java@v4
         with:
-          java-version: '25'
+          java-version: '27'
           distribution: 'temurin'
           cache: maven
       - name: Install learning-bom

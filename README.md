@@ -86,7 +86,7 @@ Tunables under `app.text2sql` in `application.yaml`: `default-max-rows` (100), `
 <a id="run"></a>
 ## <span style="color:hsl(171,80%,58%)">3. 🚀 Run</span>
 
-Prerequisites: JDK 25 and Docker. The parent POM `com.org.llm:super-pom` and the `learning-bom` it imports are not on Maven Central, so install both once from their own repositories:
+Prerequisites: JDK 27 and Docker. The parent POM `com.org.llm:super-pom` and the `learning-bom` it imports are not on Maven Central, so install both once from their own repositories:
 
 ```sh
 (cd ~/projects/learning-bom && mvn -N install)
